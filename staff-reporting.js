@@ -11,7 +11,6 @@ const controls = ['range', 'platform', 'creative', 'campaign', 'refresh'];
 let report = null, generation = 0, appCheck, currentUser = null, busy = false;
 const app = initializeApp(config.firebase, 'staff-reporting');
 const auth = getAuth(app);
-$('test-label').hidden = config.environment !== 'test';
 const callable = httpsCallable(getFunctions(app, config.region), config.functionName);
 
 let toastTimer;
@@ -60,7 +59,7 @@ function render() {
   const sums = total(rows);
   $('cards').replaceChildren();
   for (const [label, count, help] of [
-    ['Ad Displays', sums.displays.toLocaleString(), 'Number of times an ad appeared'],
+    ['Ad Displays', sums.displays.toLocaleString(), 'Number of times an ad was shown to a user'],
     ['Ad Clicks', sums.clicks.toLocaleString(), 'At most one click per displayed ad'],
     ['Continued Learning', sums.continues.toLocaleString(), 'Number of Keep Learning taps'],
     ['Click Rate', clickRate(sums), 'Ad clicks divided by ad displays']]) {
@@ -70,13 +69,15 @@ function render() {
     const description = document.createElement('p'); description.textContent = help;
     card.append(title, description, number); $('cards').append(card);
   }
-  const formatDay = day => new Intl.DateTimeFormat('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'
-  }).format(new Date(day + 'T00:00:00Z'));
-  const fetched = new Intl.DateTimeFormat('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
-  }).format(new Date(report.fetched_at));
-  $('period').textContent = `${formatDay(report.start_date)} through ${formatDay(report.end_date)} | UTC | Last refreshed ${fetched} (local time)`;
+  const AP_MONTHS = ['Jan.', 'Feb.', 'March', 'April', 'May', 'June', 'July', 'Aug.', 'Sept.', 'Oct.', 'Nov.', 'Dec.'];
+  const formatDay = day => {
+    const d = new Date(day + 'T00:00:00Z');
+    return `${AP_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+  };
+  const when = new Date(report.fetched_at);
+  const fetched = `${AP_MONTHS[when.getMonth()]} ${when.getDate()}, ${when.getFullYear()}, ` +
+    new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(when);
+  $('period').textContent = `${formatDay(report.start_date)} through ${formatDay(report.end_date)} | UTC | Fetched ${fetched} (local time)`;
   $('report').hidden = false;
   if (!rows.length) message('No activity for these filters. Try another date range, platform, campaign, or creative.', false, true);
 }
