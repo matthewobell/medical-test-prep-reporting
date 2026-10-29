@@ -43,3 +43,16 @@ export function total(rows) {
 export function clickRate(summary) {
   return summary.displays ? (100 * summary.clicks / summary.displays).toFixed(1) + '%' : '—';
 }
+
+// Use both IDs so matching creative IDs in different campaigns cannot mix.
+export const creativeKey = row => JSON.stringify([row.campaign_id, row.creative_id]);
+export function selectRows(rows, campaign = 'all', creative = 'all') {
+  return rows.filter(row => (campaign === 'all' || row.campaign_id === campaign) &&
+    (creative === 'all' || creativeKey(row) === creative));
+}
+export function creativeOptions(rows, campaign = 'all') {
+  return [...new Map(selectRows(rows, campaign).map(row => [creativeKey(row), {
+    value: creativeKey(row),
+    label: campaign === 'all' ? `${row.campaign_name} · ${row.creative_name}` : row.creative_name
+  }])).values()];
+}
