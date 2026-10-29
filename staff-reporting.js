@@ -86,7 +86,7 @@ async function loadReport() {
   if (!currentUser) return;
   const user = currentUser, run = ++generation;
   const request = { ...dateRange(Number($('range').value)), platform: $('platform').value };
-  clearReport(); setBusy(true); message('Loading your reportâ€¦', false, true);
+  clearReport(); setBusy(true); message('Loading your report', false, true);
   try {
     appCheck ||= initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(config.siteKey),
       isTokenAutoRefreshEnabled: true });
