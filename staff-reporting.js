@@ -4,29 +4,37 @@ import { getAuth, setPersistence, browserSessionPersistence, GoogleAuthProvider,
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-functions.js';
 import { reportingConfig as config } from './reporting-config.js';
-import { dateRange, validateReport, total, clickRate } from './report-model.mjs';
+import { dateRange, validateReport, total, clickRate, selectRows, creativeOptions } from './report-model.mjs?v=2';
 
 const $ = id => document.getElementById(id);
-const controls = ['range', 'platform', 'campaign', 'refresh'];
-let report = null, detail = null, generation = 0, appCheck, currentUser = null, busy = false;
+const controls = ['range', 'platform', 'creative', 'campaign', 'refresh'];
+let report = null, generation = 0, appCheck, currentUser = null, busy = false;
 const app = initializeApp(config.firebase, 'staff-reporting');
 const auth = getAuth(app);
+$('test-label').hidden = config.environment !== 'test';
 const callable = httpsCallable(getFunctions(app, config.region), config.functionName);
 
-function message(text, error = false) {
+let toastTimer;
+function message(text, error = false, persistent = false) {
+  clearTimeout(toastTimer);
   $('status').textContent = text;
   $('status').setAttribute('role', error ? 'alert' : 'status');
+  $('notification').hidden = false;
+  $('notification').classList.toggle('error', error);
+  if (!error && !persistent) toastTimer = setTimeout(() => { $('notification').hidden = true; }, 7000);
 }
+$('dismiss-status').onclick = () => { clearTimeout(toastTimer); $('notification').hidden = true; };
 function clearReport() {
-  report = null; detail = null;
-  $('cards').replaceChildren(); $('table').replaceChildren();
-  $('period').textContent = ''; $('back').hidden = true;
+  report = null;
+  $('cards').replaceChildren();
+  $('period').textContent = '';
   $('report').hidden = true;
   $('campaign').replaceChildren(new Option('All campaigns', 'all'));
+  $('creative').replaceChildren(new Option('All creatives', 'all'));
 }
 function setBusy(value) {
   busy = value;
-  controls.forEach(id => $(id).disabled = value || !currentUser);
+  controls.forEach(id => $(id).disabled = value || !currentUser || (['campaign', 'creative'].includes(id) && !report));
   $('report').setAttribute('aria-busy', String(value));
 }
 function readableError(error) {
@@ -39,68 +47,45 @@ function readableError(error) {
   if (code.includes('appCheck') || code.includes('app-check') || code.includes('failed-precondition')) return 'Website verification is not ready. Contact your administrator.';
   return 'Reports could not be loaded. Check your connection and try again. If this continues, contact your administrator.';
 }
-function cell(row, text, heading = false) {
-  const element = document.createElement(heading ? 'th' : 'td');
-  if (heading) element.scope = 'col';
-  element.textContent = String(text); row.append(element); return element;
+function updateCreatives() {
+  $('creative').replaceChildren(new Option('All creatives', 'all'));
+  if (!report) return;
+  for (const option of creativeOptions(report.rows, $('campaign').value)) {
+    $('creative').append(new Option(option.label, option.value));
+  }
 }
 function render() {
   if (!report || !currentUser) return;
-  const selected = $('campaign').value;
-  const rows = report.rows.filter(row => (selected === 'all' || row.campaign_id === selected) &&
-    (!detail || row.campaign_id === detail));
+  const rows = selectRows(report.rows, $('campaign').value, $('creative').value);
   const sums = total(rows);
   $('cards').replaceChildren();
   for (const [label, count, help] of [
-    ['Ad displays', sums.displays, 'Times an ad appeared'],
-    ['Ad clicks', sums.clicks, 'One click at most per displayed ad'],
-    ['Continued learning', sums.continues, 'Keep Learning taps'],
-    ['Click rate', clickRate(sums), 'Ad clicks ÷ ad displays']]) {
+    ['Ad Displays', sums.displays.toLocaleString(), 'Number of times an ad appeared'],
+    ['Ad Clicks', sums.clicks.toLocaleString(), 'At most one click per displayed ad'],
+    ['Continued Learning', sums.continues.toLocaleString(), 'Number of Keep Learning taps'],
+    ['Click Rate', clickRate(sums), 'Ad clicks divided by ad displays']]) {
     const card = document.createElement('article'); card.className = 'card';
     const title = document.createElement('h2'); title.textContent = label;
     const number = document.createElement('div'); number.className = 'number'; number.textContent = count;
     const description = document.createElement('p'); description.textContent = help;
-    card.append(title, number, description); $('cards').append(card);
+    card.append(title, description, number); $('cards').append(card);
   }
-  $('period').textContent = `${report.start_date} through ${report.end_date} · UTC · Fetched ${new Date(report.fetched_at).toLocaleString()} (your local time)`;
-  $('table-title').textContent = detail ? (rows[0]?.campaign_name || 'Campaign ads') : 'Campaign performance';
-  $('table-description').textContent = detail ? 'Individual ads within this campaign.' : 'Select a campaign name to see its individual ads.';
-  $('back').hidden = !detail;
-  $('table').replaceChildren();
-  if (!rows.length) {
-    const empty = document.createElement('p'); empty.className = 'empty';
-    empty.textContent = 'No activity for these filters. Try another date range, platform, or campaign.';
-    $('table').append(empty);
-  } else {
-    const table = document.createElement('table'), head = document.createElement('thead');
-    const header = document.createElement('tr');
-    for (const label of [detail ? 'Ad' : 'Campaign', 'Displays', 'Clicks', 'Continued', 'Click rate']) cell(header, label, true);
-    head.append(header); table.append(head);
-    const body = document.createElement('tbody');
-    const keys = [...new Set(rows.map(row => detail ? row.creative_id : row.campaign_id))];
-    for (const key of keys) {
-      const group = rows.filter(row => (detail ? row.creative_id : row.campaign_id) === key);
-      const sum = total(group), tr = document.createElement('tr');
-      const name = detail ? group[0].creative_name : group[0].campaign_name;
-      const first = cell(tr, detail ? name : '');
-      if (!detail) {
-        const button = document.createElement('button'); button.textContent = name;
-        button.onclick = () => { detail = key; render(); $('back').focus(); };
-        first.append(button);
-      }
-      for (const value of [sum.displays, sum.clicks, sum.continues, clickRate(sum)]) cell(tr, value);
-      body.append(tr);
-    }
-    table.append(body); $('table').append(table);
-  }
+  const formatDay = day => new Intl.DateTimeFormat('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'
+  }).format(new Date(day + 'T00:00:00Z'));
+  const fetched = new Intl.DateTimeFormat('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
+  }).format(new Date(report.fetched_at));
+  $('period').textContent = `${formatDay(report.start_date)} through ${formatDay(report.end_date)} | UTC | Last refreshed ${fetched} (local time)`;
   $('report').hidden = false;
+  if (!rows.length) message('No activity for these filters. Try another date range, platform, campaign, or creative.', false, true);
 }
 
 async function loadReport() {
   if (!currentUser) return;
   const user = currentUser, run = ++generation;
   const request = { ...dateRange(Number($('range').value)), platform: $('platform').value };
-  clearReport(); setBusy(true); message('Loading your report…');
+  clearReport(); setBusy(true); message('Loading your reportâ€¦', false, true);
   try {
     appCheck ||= initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(config.siteKey),
       isTokenAutoRefreshEnabled: true });
@@ -109,7 +94,8 @@ async function loadReport() {
     report = validateReport(response.data, request);
     const campaigns = new Map(report.rows.map(row => [row.campaign_id, row.campaign_name]));
     for (const [id, name] of campaigns) $('campaign').append(new Option(name, id));
-    detail = null; render(); message('Report ready. Showing actual activity from the test project.');
+    updateCreatives(); render();
+    if (report.rows.length) message('Report refreshed. Showing activity from the test project.');
   } catch (error) {
     if (run !== generation || currentUser?.uid !== user.uid) return;
     clearReport(); message(readableError(error), true);
@@ -132,16 +118,17 @@ $('sign-out').onclick = async () => {
   catch { setBusy(false); message('Sign-out could not finish. Close this tab to end this reporting session.', true); }
 };
 $('range').onchange = loadReport; $('platform').onchange = loadReport;
-$('campaign').onchange = () => { detail = null; render(); };
-$('refresh').onclick = loadReport; $('back').onclick = () => { detail = null; render(); };
+$('campaign').onchange = () => { updateCreatives(); render(); };
+$('creative').onchange = render;
+$('refresh').onclick = loadReport;
 
 try {
   await setPersistence(auth, browserSessionPersistence);
   onAuthStateChanged(auth, user => {
     ++generation; currentUser = user; clearReport(); setBusy(false);
     $('sign-in-panel').hidden = !!user; $('sign-out').hidden = !user;
-    $('account').textContent = user?.email || '';
-    if (user) loadReport(); else message('Sign in with your approved staff Google account to view reports.');
+    $('account').textContent = user?.email ? 'Signed in: ' + user.email : 'Staff reporting';
+    if (user) loadReport(); else message('Sign in with your approved Google account. Your administrator controls reporting access.', false, true);
   });
   $('sign-in').disabled = false;
 } catch {
