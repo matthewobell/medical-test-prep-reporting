@@ -12,6 +12,12 @@ export function validateReport(data, request) {
       data.platform !== request.platform || !Array.isArray(data.rows) ||
       data.rows.length > 200 || typeof data.fetched_at !== 'string' ||
       Number.isNaN(Date.parse(data.fetched_at))) throw new Error('Unreadable report.');
+  // Older deployed responses can omit scope during the backend-first rollout.
+  const scope = data.scope === undefined ? { type: 'all' } : data.scope;
+  if (!scope || !['all', 'sponsor'].includes(scope.type) ||
+      (scope.type === 'sponsor' && (typeof scope.name !== 'string' ||
+       !scope.name.trim() || scope.name.length > 160))) throw new Error('Unreadable report scope.');
+  const headingScope = scope.type === 'sponsor' ? { type: 'sponsor', name: scope.name.trim() } : { type: 'all' };
   const seen = new Set();
   const rows = data.rows.map(row => {
     for (const key of ['campaign_id', 'creative_id', 'campaign_name', 'creative_name']) {
@@ -29,7 +35,7 @@ export function validateReport(data, request) {
       campaign_name: row.campaign_name, creative_name: row.creative_name,
       platform: row.platform, displays: row.displays, clicks: row.clicks, continues: row.continues };
   });
-  return { ...data, rows };
+  return { ...data, rows, scope: headingScope };
 }
 
 export function total(rows) {
