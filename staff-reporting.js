@@ -4,9 +4,10 @@ import { getAuth, setPersistence, browserSessionPersistence, GoogleAuthProvider,
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-functions.js';
 import { reportingConfig as config } from './reporting-config.js';
-import { dateRange, validateReport, total, clickRate, selectRows, creativeOptions } from './report-model.mjs?v=2';
+import { dateRange, validateReport, total, clickRate, selectRows, creativeOptions } from './report-model.mjs?v=3';
 
 const $ = id => document.getElementById(id);
+const heading = document.querySelector('.identity h1');
 const controls = ['range', 'platform', 'creative', 'campaign', 'refresh'];
 let report = null, generation = 0, appCheck, currentUser = null, busy = false;
 const app = initializeApp(config.firebase, 'staff-reporting');
@@ -25,6 +26,7 @@ function message(text, error = false, persistent = false) {
 $('dismiss-status').onclick = () => { clearTimeout(toastTimer); $('notification').hidden = true; };
 function clearReport() {
   report = null;
+  heading.textContent = 'Campaign Dashboard: All';
   $('cards').replaceChildren();
   $('period').textContent = '';
   $('report').hidden = true;
@@ -55,6 +57,7 @@ function updateCreatives() {
 }
 function render() {
   if (!report || !currentUser) return;
+  heading.textContent = 'Campaign Dashboard: ' + (report.scope.type === 'sponsor' ? report.scope.name : 'All');
   const rows = selectRows(report.rows, $('campaign').value, $('creative').value);
   const sums = total(rows);
   $('cards').replaceChildren();
