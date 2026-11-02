@@ -1,7 +1,7 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js';
 import { getAuth, setPersistence, browserSessionPersistence, onAuthStateChanged, GoogleAuthProvider,
   signInWithPopup, signOut, sendSignInLinkToEmail, isSignInWithEmailLink, signInWithEmailLink } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
-import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check.js';
+import { initializeAppCheck, ReCaptchaEnterpriseProvider, getToken } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-functions.js';
 import { reportingConfig as config } from './reporting-config.js';
 
@@ -12,6 +12,9 @@ const fetchLibrary = httpsCallable(getFunctions(app, config.region), 'get_admin_
 let user = null, catalog = null, generation = 0, appCheck, timer, ready = false, authBusy = false;
 const fetchDrafts = httpsCallable(getFunctions(app, config.region), 'get_ad_drafts');
 const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_draft');
+const prepareUpload = httpsCallable(getFunctions(app, config.region), 'prepare_ad_upload');
+const completeUpload = httpsCallable(getFunctions(app, config.region), 'complete_ad_upload');
+let uploadTask = null, previewUrl = null;
 let drafts = [], editor = null, editorRead = null, dirty = false, draftBusy = false, draftRequest = 0;
 let section = 'sponsors', selected = null;
 let emailLink = isSignInWithEmailLink(auth, window.location.href) ? window.location.href : '';
@@ -43,6 +46,7 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  clearMediaPreview();
   catalog = null; selected = null; drafts = []; editor = null; editorRead = null; dirty = false; draftBusy = false; ++draftRequest;
   $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; $('draft-status').textContent = '';
   $('library').hidden = true; $('loading').hidden = true; $('auth-panel').hidden = false;
@@ -204,7 +208,9 @@ function validDraft(value, full = false) {
   if (full) {
     if (!value.fields || typeof value.fields !== 'object' || Array.isArray(value.fields)) throw Error('Invalid draft fields');
     const type = value.kind === 'campaign' ? 'campaigns' : 'creatives';
-    if (Object.keys(value.fields).some(key => !fields[type].includes(key) || ['approved','enabled'].includes(key))) throw Error('Invalid draft fields');
+    if (Object.keys(value.fields).some(key => (!fields[type].includes(key) && !(type === 'creatives' && key === 'media_assets')) || ['approved','enabled'].includes(key))) throw Error('Invalid draft fields');
+    const assets = value.fields.media_assets;
+    if (assets !== undefined && (!assets || typeof assets !== 'object' || Array.isArray(assets) || Object.keys(assets).some(key => !['image','video','poster'].includes(key)) || Object.values(assets).some(id => typeof id !== 'string' || !id || id.length > 200 || id.includes('/')))) throw Error('Invalid media references');
     // Reuse the library field checks before putting any stored values into controls.
     validateLibrary({environment:'test',fetched_at:value.updated_at,sponsors:[],campaigns:[],creatives:[],
       [type]:[{id:value.id,...value.fields}]});
@@ -340,7 +346,9 @@ function editList(parent, key, values) {
 }
 function openEditor(draft) {
   if (!catalog || !user) return;
+  clearMediaPreview();
   ++draftRequest; editor = structuredClone(draft); dirty = false; draftBusy = false;
+  if (editor.kind === 'creative') editor.fields.media_assets ||= {};
   $('draft-fields').disabled = false; $('save-draft').disabled = false; $('close-draft').disabled = false;
   $('draft-editor').hidden = false; $('browse-panel').hidden = true; $('reload-draft').hidden = true;
   $('draft-status').textContent = '';
@@ -353,12 +361,116 @@ function openEditor(draft) {
       key === 'campaign_id' ? catalog.campaigns.map(row => [row.id,row.name || row.id]) : null;
     readers.push([key,['share_schedule','creative_overrides'].includes(key) ? editList($('editor-fields'),key,draft.fields[key]) : editField($('editor-fields'),key,draft.fields[key],choices)]);
   }
-  if (draft.kind === 'creative') $('editor-fields').append(node('p','Rotation weight applies within a campaign, not to its exposure share. Media fields accept existing HTTPS links; file uploads come later.','wide muted'));
-  editorRead = () => Object.fromEntries(readers.map(([key,read]) => [key,read()]));
+  if (draft.kind === 'creative') $('editor-fields').append(node('p','Rotation weight applies within a campaign, not to its exposure share. Media fields accept existing HTTPS links. Private uploads below remain attached only to this draft.','wide muted'));
+  editorRead = () => ({...Object.fromEntries(readers.map(([key,read]) => [key,read()])),
+    ...(editor.kind === 'creative' ? {media_assets:{...editor.fields.media_assets}} : {})});
+  if (draft.kind === 'creative') uploadControls();
   $('editor-title').tabIndex = -1; $('editor-title').focus();
 }
+function clearMediaPreview() {
+  if (uploadTask) { uploadTask.abort(); uploadTask = null; }
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+}
+function uploadControls() {
+  const box = node('fieldset',undefined,'wide'); box.append(node('legend','Private draft media'));
+  box.append(node('p',editor.id ? 'Upload a file, then save the draft to attach it. Existing uploaded files are kept; replacing an attachment does not delete files.' :
+    'Save this creative draft first to enable uploads.','field-help'));
+  const zone = node('div',undefined,'draft-list');
+  for (const [slot,title] of [['image','Creative image'],['video','Creative video'],['poster','Video cover image']]) {
+    const wrap = node('div'), id = 'upload-' + slot;
+    const label = node('label',title); label.htmlFor = id;
+    const file = node('input'); file.id = id; file.type = 'file'; file.accept = slot === 'video' ? 'video/mp4' : 'image/jpeg,image/png,image/webp';
+    file.disabled = !editor.id;
+    const help = node('p',slot === 'video' ? 'MP4 · up to 50 MB' : 'JPEG, PNG, WebP · up to 10 MB','field-help');
+    const status = node('p',editor.fields.media_assets[slot] ? 'A private file is attached to this draft.' : 'No private file attached.','muted'); status.setAttribute('role','status');
+    const progress = node('progress'); progress.max = 100; progress.value = 0; progress.hidden = true; progress.setAttribute('aria-label',title + ' upload progress');
+    const preview = node('button','Preview saved file','secondary'); preview.type = 'button'; preview.hidden = !editor.fields.media_assets[slot];
+    const player = node('div');
+    file.onchange = () => uploadMedia(slot,file,status,progress);
+    preview.onclick = () => previewMedia(slot,preview,status,player);
+    wrap.append(label,file,help,status,progress,preview,player); zone.append(wrap);
+  }
+  box.append(zone); $('editor-fields').append(box);
+}
+function mediaLock(busy) {
+  draftBusy = busy; $('draft-fields').disabled = busy; $('save-draft').disabled = busy; $('close-draft').disabled = busy;
+}
+async function uploadMedia(slot,input,status,progress) {
+  const file = input.files?.[0];
+  if (!file || !editor?.id || !user || draftBusy) return;
+  const maximum = (slot === 'video' ? 50 : 10) * 1024 * 1024;
+  const types = slot === 'video' ? ['video/mp4'] : ['image/jpeg','image/png','image/webp'];
+  if (!types.includes(file.type) || !file.size || file.size > maximum || file.name.length > 200) {
+    status.textContent = 'Choose a supported file within the displayed size limit.'; input.value = ''; return;
+  }
+  const current = editor, run = generation, uid = user.uid;
+  const active = () => editor === current && generation === run && user?.uid === uid;
+  mediaLock(true); status.textContent = 'Preparing private upload…'; progress.hidden = false; progress.value = 0;
+  try {
+    const prepared = await prepareUpload({draft_id:current.id,slot,name:file.name,size:file.size,content_type:file.type});
+    if (!active()) return;
+    const data = prepared.data, url = new URL(data.upload_url);
+    if (data.environment !== 'test' || !data.asset?.id || data.asset.slot !== slot || url.protocol !== 'https:' || url.hostname !== 'storage.googleapis.com' || url.username || url.password) throw Error('Invalid upload response');
+    status.textContent = 'Uploading ' + file.name + '…';
+    await new Promise((resolve,reject) => {
+      const request = new XMLHttpRequest(); uploadTask = request;
+      request.open('PUT',url.href); request.setRequestHeader('Content-Type',file.type); request.timeout = 20 * 60 * 1000;
+      request.upload.onprogress = event => { if (active() && event.lengthComputable) progress.value = Math.round(event.loaded / event.total * 100); };
+      request.onload = () => request.status >= 200 && request.status < 300 ? resolve() : reject(Error('Upload failed'));
+      request.onerror = request.ontimeout = request.onabort = () => reject(Error('Upload interrupted'));
+      request.send(file);
+    });
+    uploadTask = null; if (!active()) return;
+    status.textContent = 'Checking uploaded file…';
+    const completed = await completeUpload({asset_id:data.asset.id});
+    if (!active()) return;
+    const result = completed.data;
+    if (result.environment !== 'test' || result.asset?.status !== 'ready' || result.asset.id !== data.asset.id || result.asset.slot !== slot) throw Error('Invalid completion');
+    current.fields.media_assets[slot] = result.asset.id; dirty = true;
+    status.textContent = 'Upload checked. Click Save draft to attach this file, then reopen its preview.';
+    progress.value = 100;
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    status.textContent = 'Upload did not finish or could not be validated. Your previous saved attachment is unchanged. Choose the file again to retry.';
+  } finally {
+    if (active()) { input.value = ''; mediaLock(false); }
+  }
+}
+async function previewMedia(slot,button,status,player) {
+  if (!editor?.id || !user || draftBusy) return;
+  if (dirty) { status.textContent = 'Save the draft before previewing its attached media.'; return; }
+  const current = editor, run = generation, uid = user.uid;
+  const active = () => editor === current && generation === run && user?.uid === uid;
+  mediaLock(true); status.textContent = 'Checking access and loading private preview…';
+  try {
+    const [token, attestation] = await Promise.all([user.getIdToken(), getToken(appCheck)]);
+    if (!active()) return;
+    const url = new URL('https://us-central1-medical-test-prep-ads-test.cloudfunctions.net/preview_ad_asset');
+    url.searchParams.set('draft_id',current.id); url.searchParams.set('slot',slot);
+    const response = await fetch(url,{headers:{Authorization:'Bearer ' + token,'X-Firebase-AppCheck':attestation.token},cache:'no-store',credentials:'omit',referrerPolicy:'no-referrer'});
+    if (!active()) return;
+    if (!response.ok) throw Error('Preview unavailable');
+    const blob = await response.blob(); if (!active()) return;
+    const allowed = slot === 'video' ? ['video/mp4'] : ['image/jpeg','image/png','image/webp'];
+    if (!allowed.includes(blob.type) || blob.size > (slot === 'video' ? 50 : 10)*1024*1024) throw Error('Invalid media');
+    clearMediaPreview(); previewUrl = URL.createObjectURL(blob);
+    // Keep only one local preview URL alive at a time.
+    for (const element of document.querySelectorAll('[data-draft-preview]')) element.remove();
+    const element = node(slot === 'video' ? 'video' : 'img'); element.src = previewUrl;
+    element.dataset.draftPreview = ''; element.style.maxWidth = '100%'; element.style.maxHeight = '400px';
+    if (slot === 'video') { element.controls = true; element.muted = true; } else element.alt = 'Private creative preview';
+    player.replaceChildren(element); status.textContent = 'Private preview loaded. This does not serve an ad or record an impression.';
+  } catch {
+    if (active()) status.textContent = 'Preview could not load. Check your connection and staff access, then try again.';
+  } finally { if (active()) mediaLock(false); }
+}
+
 function leaveEditor() {
   if (draftBusy || (dirty && !window.confirm('Discard unsaved draft changes and return to the library?'))) return false;
+  clearMediaPreview();
   editor = null; editorRead = null; dirty = false; ++draftRequest;
   $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; render(); return true;
 }
