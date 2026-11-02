@@ -214,7 +214,7 @@ function handleAuthUser(user) {
   } else if (user) {
     loadReport();
   } else {
-    message('Sign in with your email or Google account. Your administrator controls reporting access.', false, true);
+    clearTimeout(toastTimer); $('notification').hidden = true;
   }
 }
 try {
