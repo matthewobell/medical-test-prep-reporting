@@ -91,6 +91,7 @@ function clearReport() {
   report = null;
   heading.textContent = 'Campaign Reporting';
   $('dashboard-content').hidden = true;
+  $('dashboard-loading').hidden = true;
   $('sign-in-panel').hidden = false;
   $('portal-page').setAttribute('data-view', 'entry');
   $('cards').replaceChildren();
@@ -147,6 +148,7 @@ function render() {
   const fetched = `${AP_MONTHS[when.getMonth()]} ${when.getDate()}, ${when.getFullYear()}, ` +
     new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(when);
   $('period').textContent = `${formatDay(report.start_date)} through ${formatDay(report.end_date)} | UTC | Fetched ${fetched} (local time)`;
+  $('dashboard-loading').hidden = true;
   $('report').hidden = false;
   $('dashboard-content').hidden = false;
   $('sign-in-panel').hidden = true;
@@ -158,7 +160,7 @@ async function loadReport() {
   if (!currentUser) return;
   const user = currentUser, run = ++generation;
   const request = { ...dateRange(Number($('range').value)), platform: $('platform').value };
-  clearReport(); $('sign-in-panel').hidden = true; setBusy(true); message('Loading your report', false, true);
+  clearReport(); $('sign-in-panel').hidden = true; $('dashboard-loading').hidden = false; setBusy(true); message('Loading your report', false, true);
   try {
     appCheck ||= initializeAppCheck(app, { provider: new ReCaptchaEnterpriseProvider(config.siteKey),
       isTokenAutoRefreshEnabled: true });
