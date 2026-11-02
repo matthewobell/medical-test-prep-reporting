@@ -84,7 +84,7 @@ function message(text, error = false) {
   $('status').setAttribute('role', error ? 'alert' : 'status');
   $('notification').hidden = false;
   $('notification').classList.toggle('error', error);
-  toastTimer = setTimeout(() => { $('notification').hidden = true; }, 5000);
+  toastTimer = setTimeout(() => { $('notification').hidden = true; }, 3000);
 }
 $('dismiss-status').onclick = () => { clearTimeout(toastTimer); $('notification').hidden = true; };
 function clearReport() {
