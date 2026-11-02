@@ -10,6 +10,9 @@ const app = initializeApp(config.firebase, 'staff-reporting');
 const auth = getAuth(app);
 const fetchLibrary = httpsCallable(getFunctions(app, config.region), 'get_admin_library');
 let user = null, catalog = null, generation = 0, appCheck, timer, ready = false, authBusy = false;
+const fetchDrafts = httpsCallable(getFunctions(app, config.region), 'get_ad_drafts');
+const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_draft');
+let drafts = [], editor = null, editorRead = null, dirty = false, draftBusy = false, draftRequest = 0;
 let section = 'sponsors', selected = null;
 let emailLink = isSignInWithEmailLink(auth, window.location.href) ? window.location.href : '';
 const labels = { name:'Name', sponsor_id:'Sponsor', campaign_id:'Campaign', enabled:'Enabled', approved:'Approved',
@@ -40,7 +43,8 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
-  catalog = null; selected = null;
+  catalog = null; selected = null; drafts = []; editor = null; editorRead = null; dirty = false; draftBusy = false; ++draftRequest;
+  $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; $('draft-status').textContent = '';
   $('library').hidden = true; $('loading').hidden = true; $('auth-panel').hidden = false;
   $('records').replaceChildren(); $('details').replaceChildren(); $('fetched').textContent = '';
   $('sponsor-filter').replaceChildren(new Option('All sponsors','all'));
@@ -118,6 +122,12 @@ function detail(row) {
     list.append(item);
   }
   $('details').append(list);
+  if (section === 'campaigns' || section === 'creatives') {
+    const edit = node('button','Edit as draft'); edit.className = 'related';
+    edit.onclick = () => openEditor({kind:section === 'campaigns' ? 'campaign' : 'creative', target_id:row.id,
+      fields:Object.fromEntries(fields[section].filter(key => !['approved','enabled'].includes(key)).map(key => [key,row[key]]))});
+    $('details').append(edit);
+  }
   if (section === 'sponsors' || section === 'campaigns') {
     const related = node('div',undefined,'related');
     const button = node('button',section === 'sponsors' ? 'View campaigns' : 'View creatives');
@@ -138,6 +148,9 @@ function updateCampaigns() {
 }
 function render() {
   if (!catalog || !user) return;
+  $('tab-drafts').setAttribute('aria-pressed',String(section === 'drafts'));
+  $('sponsor-filter').disabled = section === 'drafts';
+  if (section === 'drafts') { renderDrafts(); return; }
   const sponsor = $('sponsor-filter').value, campaign = $('campaign-filter').value;
   const campaignIds = new Set(catalog.campaigns.filter(row =>
     (sponsor === 'all' || row.sponsor_id === sponsor) && (campaign === 'all' || row.id === campaign)).map(row => row.id));
@@ -167,9 +180,9 @@ async function load() {
   try {
     if (config.environment !== 'test' || config.firebase.projectId !== 'medical-test-prep-ads-test') throw Error('Wrong project');
     appCheck ||= initializeAppCheck(app,{provider:new ReCaptchaEnterpriseProvider(config.siteKey),isTokenAutoRefreshEnabled:true});
-    const response = await fetchLibrary({});
+    const [response, draftResponse] = await Promise.all([fetchLibrary({}), fetchDrafts({draft_id:null})]);
     if (run !== generation || user?.uid !== uid) return;
-    catalog = validateLibrary(response.data);
+    catalog = validateLibrary(response.data); drafts = validateDraftList(draftResponse.data);
     for (const row of catalog.sponsors) $('sponsor-filter').append(new Option(row.name || row.id,row.id));
     updateCampaigns(); render();
     $('library').hidden = false; $('loading').hidden = true;
@@ -181,6 +194,218 @@ async function load() {
       'The campaign library could not load. Check your connection or contact your administrator.',true);
   } finally { if (run === generation) $('refresh').disabled = false; }
 }
+function validDraft(value, full = false) {
+  if (!value || value.environment !== 'test' || value.status !== 'draft' || !['campaign','creative'].includes(value.kind) ||
+      typeof value.id !== 'string' || !value.id || value.id.includes('/') || value.id.length > 200 ||
+      !Number.isSafeInteger(value.revision) || value.revision < 1 ||
+      (value.target_id !== null && (typeof value.target_id !== 'string' || !value.target_id || value.target_id.includes('/'))) ||
+      typeof value.name !== 'string' || typeof value.updated_by !== 'string' ||
+      !Number.isFinite(Date.parse(value.updated_at))) throw Error('Invalid draft response');
+  if (full) {
+    if (!value.fields || typeof value.fields !== 'object' || Array.isArray(value.fields)) throw Error('Invalid draft fields');
+    const type = value.kind === 'campaign' ? 'campaigns' : 'creatives';
+    if (Object.keys(value.fields).some(key => !fields[type].includes(key) || ['approved','enabled'].includes(key))) throw Error('Invalid draft fields');
+    // Reuse the library field checks before putting any stored values into controls.
+    validateLibrary({environment:'test',fetched_at:value.updated_at,sponsors:[],campaigns:[],creatives:[],
+      [type]:[{id:value.id,...value.fields}]});
+  }
+  return value;
+}
+function validateDraftList(data) {
+  if (data?.environment !== 'test' || !Array.isArray(data.drafts) || data.drafts.length > 500) throw Error('Invalid draft list');
+  const ids = new Set();
+  for (const draft of data.drafts) { validDraft(draft); if (ids.has(draft.id)) throw Error('Duplicate draft'); ids.add(draft.id); }
+  return data.drafts;
+}
+function draftMetadata(draft) {
+  return draft.id ? 'Saved ' + new Date(draft.updated_at).toLocaleString() + ' · Staff ID: ' + draft.updated_by + ' · Revision ' + draft.revision : 'Not saved yet';
+}
+function renderDrafts() {
+  for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed','false');
+  $('campaign-filter').disabled = true;
+  $('summary').textContent = drafts.length + ' drafts · Drafts are shown separately from catalog filters and do not serve ads.';
+  $('records').replaceChildren(); $('details').replaceChildren();
+  if (!drafts.length) $('records').append(node('p','No saved drafts yet. Create a campaign or creative draft to begin.','empty'));
+  for (const draft of drafts) {
+    const button = node('button',draft.name,'record');
+    button.append(node('small',draft.kind === 'campaign' ? 'Campaign draft' : 'Creative draft'),node('small',draftMetadata(draft)));
+    button.setAttribute('aria-pressed',String(selected === draft.id));
+    button.onclick = () => { selected = draft.id; renderDrafts(); };
+    $('records').append(button);
+  }
+  const draft = drafts.find(row => row.id === selected);
+  if (!draft) { $('details').append(node('p','Select a draft to continue editing.','empty')); return; }
+  $('details').append(node('h2',draft.name),node('p',draftMetadata(draft),'muted'),
+    node('p',draft.target_id ? 'Draft of existing record: ' + draft.target_id : 'Draft for a new record','muted'));
+  const button = node('button','Open draft');
+  button.onclick = () => readDraft(draft.id, button);
+  $('details').append(button);
+}
+async function readDraft(id, button) {
+  const run = generation, uid = user?.uid, ticket = ++draftRequest;
+  if (!uid) return;
+  const wasEditing = !!editor;
+  if (wasEditing) { draftBusy = true; $('draft-fields').disabled = true; $('save-draft').disabled = true; $('close-draft').disabled = true; }
+  if (button) button.disabled = true;
+  try {
+    const response = await fetchDrafts({draft_id:id});
+    if (run !== generation || user?.uid !== uid || ticket !== draftRequest) return;
+    if (response.data?.environment !== 'test') throw Error('Invalid draft response');
+    const draft = validDraft(response.data.draft,true);
+    if (draft.id !== id) throw Error('Unexpected draft');
+    openEditor(draft);
+  } catch (error) {
+    if (run !== generation || user?.uid !== uid || ticket !== draftRequest) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff access could not be confirmed. Sign in with an approved account.',true);
+    } else notice('The draft could not load. Refresh the library and try again.',true);
+  } finally {
+    if (button) button.disabled = false;
+    if (run === generation && user?.uid === uid && wasEditing && editor) {
+      draftBusy = false; $('draft-fields').disabled = false; $('save-draft').disabled = false; $('close-draft').disabled = false;
+    }
+  }
+}
+function localDate(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) throw Error('Invalid draft date');
+  const pad = (n, length = 2) => String(n).padStart(length,'0');
+  return date.getFullYear() + '-' + pad(date.getMonth()+1) + '-' + pad(date.getDate()) + 'T' +
+    pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds()) + '.' + pad(date.getMilliseconds(),3);
+}
+let controlNumber = 0;
+function editField(parent, key, value, choices = null) {
+  const box = node('div'), id = 'draft-control-' + (++controlNumber);
+  const label = node('label',labels[key] || ({percent:'Exposure share (%)',creative_ids:'Allowed creatives'})[key] || key);
+  label.htmlFor = id; box.append(label);
+  let control, read;
+  if (key === 'platforms' || key === 'creative_ids') {
+    control = node('div',undefined,'choices'); control.id = id; control.setAttribute('role','group');
+    label.id = id + '-label'; control.setAttribute('aria-labelledby',label.id); label.removeAttribute('for');
+    const options = key === 'platforms' ? [['ios','iOS'],['android','Android']] :
+      catalog.creatives.map(row => [row.id,row.name || row.id]);
+    for (const existing of value || []) if (!options.some(([option]) => option === existing)) options.push([existing,existing + ' (not in current catalog)']);
+    const inputs = options.map(([option,text]) => {
+      const input = node('input'); input.type = 'checkbox'; input.value = option; input.checked = (value || []).includes(option);
+      const wrap = node('label'); wrap.append(input,document.createTextNode(text)); control.append(wrap); return input;
+    });
+    read = () => inputs.filter(input => input.checked).map(input => input.value);
+  } else if (choices || ['exclusive','video_muted_by_default','media_type'].includes(key)) {
+    control = node('select'); control.append(new Option('Not set',''));
+    const options = choices || (key === 'media_type' ? [['image','Image'],['video','Video']] : [['true','Yes'],['false','No']]);
+    for (const [option,text] of options) control.append(new Option(text,option));
+    if (value != null && !Array.from(control.options).some(option => option.value === String(value))) control.append(new Option(String(value) + ' (not in current catalog)',String(value)));
+    control.value = value == null ? '' : String(value);
+    read = () => control.value === '' ? null : ['exclusive','video_muted_by_default'].includes(key) ? control.value === 'true' : control.value;
+  } else {
+    control = node(['body_text','disclaimer_text'].includes(key) ? 'textarea' : 'input');
+    if (['start_at','end_at'].includes(key)) {
+      control.type = 'datetime-local'; control.step = '0.001'; control.value = localDate(value);
+      const original = control.value;
+      read = () => !control.value ? null : control.value === original && value ? value : new Date(control.value).toISOString();
+    } else if (['rotation_weight','percent'].includes(key)) {
+      control.type = 'number'; control.min = key === 'percent' ? '0' : '1'; control.max = key === 'percent' ? '100' : String(Number.MAX_SAFE_INTEGER); control.step = '1'; control.value = value ?? '';
+      read = () => control.value === '' ? null : Number(control.value);
+    } else {
+      if (key.endsWith('_url')) control.type = 'url';
+      control.maxLength = key.endsWith('_url') ? 2048 : key === 'name' || ['exam','module','placement'].includes(key) ? 200 : 4000;
+      control.value = value ?? ''; read = () => control.value === '' ? null : control.value;
+    }
+  }
+  if (!control.id) control.id = id;
+  box.append(control); parent.append(box);
+  return read;
+}
+function editList(parent, key, values) {
+  const box = node('fieldset',undefined,'wide'); box.append(node('legend',labels[key]));
+  box.append(node('p',key === 'share_schedule' ? 'Shares describe this campaign’s intended exposure over each period. Full booking and overlap checks happen before publishing.' :
+    'Choose existing creatives for a placement, exam, or module. Leave unfinished settings blank to complete later.','field-help'));
+  const list = node('div',undefined,'draft-list'), rows = [], maximum = key === 'share_schedule' ? 100 : 200;
+  const add = node('button',key === 'share_schedule' ? 'Add share period' : 'Add creative override','secondary'); add.type = 'button';
+  function append(value = {}) {
+    if (rows.length >= maximum) return;
+    const entry = node('fieldset',undefined,'draft-entry'); entry.append(node('legend',key === 'share_schedule' ? 'Share period' : 'Creative override'));
+    const keys = key === 'share_schedule' ? ['start_at','end_at','percent'] : ['placement','exam','module','creative_ids'];
+    const readers = keys.map(field => [field,editField(entry,field,value[field])]);
+    const row = {entry,read:() => Object.fromEntries(readers.map(([field,read]) => [field,read()]))};
+    const remove = node('button','Remove from draft','secondary'); remove.type = 'button';
+    remove.onclick = () => { rows.splice(rows.indexOf(row),1); entry.remove(); add.disabled = false; dirty = true; };
+    entry.append(remove); list.append(entry); rows.push(row); add.disabled = rows.length >= maximum;
+  }
+  for (const value of values || []) append(value);
+  add.onclick = () => { append(); dirty = true; };
+  box.append(list,add); parent.append(box);
+  return () => rows.map(row => row.read());
+}
+function openEditor(draft) {
+  if (!catalog || !user) return;
+  ++draftRequest; editor = structuredClone(draft); dirty = false; draftBusy = false;
+  $('draft-fields').disabled = false; $('save-draft').disabled = false; $('close-draft').disabled = false;
+  $('draft-editor').hidden = false; $('browse-panel').hidden = true; $('reload-draft').hidden = true;
+  $('draft-status').textContent = '';
+  $('editor-title').textContent = (draft.kind === 'campaign' ? 'Campaign' : 'Creative') + ' draft';
+  $('draft-metadata').textContent = draftMetadata(draft) + (draft.target_id ? ' · Based on record: ' + draft.target_id : ' · New record');
+  $('editor-fields').replaceChildren();
+  const type = draft.kind === 'campaign' ? 'campaigns' : 'creatives', readers = [];
+  for (const key of fields[type].filter(key => !['approved','enabled'].includes(key))) {
+    const choices = key === 'sponsor_id' ? catalog.sponsors.map(row => [row.id,row.name || row.id]) :
+      key === 'campaign_id' ? catalog.campaigns.map(row => [row.id,row.name || row.id]) : null;
+    readers.push([key,['share_schedule','creative_overrides'].includes(key) ? editList($('editor-fields'),key,draft.fields[key]) : editField($('editor-fields'),key,draft.fields[key],choices)]);
+  }
+  if (draft.kind === 'creative') $('editor-fields').append(node('p','Rotation weight applies within a campaign, not to its exposure share. Media fields accept existing HTTPS links; file uploads come later.','wide muted'));
+  editorRead = () => Object.fromEntries(readers.map(([key,read]) => [key,read()]));
+  $('editor-title').tabIndex = -1; $('editor-title').focus();
+}
+function leaveEditor() {
+  if (draftBusy || (dirty && !window.confirm('Discard unsaved draft changes and return to the library?'))) return false;
+  editor = null; editorRead = null; dirty = false; ++draftRequest;
+  $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; render(); return true;
+}
+$('draft-form').oninput = () => { dirty = true; };
+$('draft-form').onchange = () => { dirty = true; };
+$('close-draft').onclick = leaveEditor;
+$('new-campaign').onclick = () => openEditor({kind:'campaign',target_id:null,fields:{}});
+$('new-creative').onclick = () => openEditor({kind:'creative',target_id:null,fields:{}});
+$('tab-drafts').onclick = () => { section = 'drafts'; selected = null; render(); };
+$('reload-draft').onclick = () => {
+  if (editor?.id && !draftBusy && (!dirty || window.confirm('Discard your unsaved changes and load the latest saved version?'))) readDraft(editor.id,$('reload-draft'));
+};
+window.addEventListener('beforeunload',event => { if (dirty || draftBusy) { event.preventDefault(); event.returnValue = ''; } });
+$('draft-form').onsubmit = async event => {
+  event.preventDefault(); if (!editor || !user || draftBusy) return;
+  const run = generation, uid = user.uid, current = editor;
+  let values;
+  try { values = editorRead(); }
+  catch { $('draft-status').textContent = 'Check the dates and field values before saving.'; return; }
+  draftBusy = true; $('draft-fields').disabled = true; $('save-draft').disabled = true; $('close-draft').disabled = true;
+  $('reload-draft').hidden = true; $('draft-status').textContent = 'Saving draft…';
+  try {
+    const response = await persistDraft({draft_id:current.id || null,expected_revision:current.revision || 0,
+      kind:current.kind,target_id:current.target_id,fields:values});
+    if (run !== generation || user?.uid !== uid || editor !== current) return;
+    if (response.data?.environment !== 'test') throw Error('Invalid draft response');
+    const saved = validDraft(response.data.draft,true);
+    if (saved.kind !== current.kind || saved.target_id !== current.target_id || (current.id && saved.id !== current.id)) throw Error('Unexpected draft');
+    drafts = [saved,...drafts.filter(row => row.id !== saved.id)].sort((a,b) => b.updated_at.localeCompare(a.updated_at));
+    openEditor(saved); $('draft-status').textContent = 'Draft saved. Served ads have not changed.';
+  } catch (error) {
+    if (run !== generation || user?.uid !== uid || editor !== current) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    const conflict = error?.code?.includes('aborted');
+    $('draft-status').textContent = conflict ? 'Someone else saved this draft. Your edits are still here and were not saved. Copy anything you want to keep before reloading the saved version.' :
+      error?.code?.includes('invalid-argument') ? 'Draft could not save. Check HTTPS links, whole-number weights and shares, and that each end time follows its start time. Your edits are still here.' :
+      'Save could not be confirmed. Your edits are still here. Refresh the draft list before retrying a new draft to avoid creating a duplicate.';
+    $('reload-draft').hidden = !conflict || !current.id;
+  } finally {
+    if (run === generation && user?.uid === uid && editor) {
+      draftBusy = false; $('draft-fields').disabled = false; $('save-draft').disabled = false; $('close-draft').disabled = false;
+    }
+  }
+};
+
 function resetLink() {
   emailLink = ''; window.history.replaceState(null,'',window.location.pathname);
   $('email-submit').textContent = 'Email me a sign-in link'; $('email-retry').hidden = true;
@@ -220,6 +445,7 @@ $('email-form').onsubmit = async event => {
 };
 $('email-retry').onclick = resetLink;
 $('sign-out').onclick = async () => {
+  if ((dirty || draftBusy) && !window.confirm('Leave this editor and sign out? Any unsaved changes will be discarded. A save already sent may still finish.')) return;
   ++generation; clearLibrary(); resetLink(); $('email').value = '';
   try { await signOut(auth); } catch { notice('Sign-out could not finish. Close this tab to end this session.',true); }
 };
