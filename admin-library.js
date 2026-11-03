@@ -13,6 +13,8 @@ let user = null, catalog = null, generation = 0, appCheck, timer, ready = false,
 const fetchDrafts = httpsCallable(getFunctions(app, config.region), 'get_ad_drafts');
 const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_draft');
 const fetchReview = httpsCallable(getFunctions(app, config.region), 'review_ad_draft');
+const prepareCampaignPublish = httpsCallable(getFunctions(app, config.region), 'prepare_campaign_publish');
+const publishCampaignDraft = httpsCallable(getFunctions(app, config.region), 'publish_campaign_draft');
 let reviewRequest = 0;
 const prepareUpload = httpsCallable(getFunctions(app, config.region), 'prepare_ad_upload');
 const completeUpload = httpsCallable(getFunctions(app, config.region), 'complete_ad_upload');
@@ -652,11 +654,11 @@ function reviewValue(key, value) {
   }
   return display(key,value);
 }
-function showReview(data) {
+function showReview(data, finalSummary = false) {
   const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
   const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
   box.append(heading,node('p','Saved revision ' + data.revision + ' · Draft ID: ' + data.draft_id + ' · Reviewed ' + localTime(data.reviewed_at),'muted'),
-    node('p','Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
+    node('p',finalSummary ? 'Final publishing summary. Confirm below to update campaign settings used for ad delivery in the test project.' : 'Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
   for (const severity of ['error','warning']) {
     const items = data.issues.filter(issue => issue.severity === severity);
     if (!items.length) continue;
@@ -671,7 +673,55 @@ function showReview(data) {
     list.append(node('dt',labels[change.field] || 'Private media'),node('dd','Current: ' + reviewValue(change.field,change.before) + '\nProposed: ' + reviewValue(change.field,change.after)));
   }
   box.append(data.changes.length ? list : node('p','No editable field changes.'));
+  if (!finalSummary && data.kind === 'campaign' && data.target_id && data.checks_passed && data.changes.length) {
+    const prepare = node('button','Prepare publishing summary'); prepare.type = 'button';
+    prepare.onclick = () => campaignPublish(); box.append(prepare);
+  }
   heading.focus();
+}
+async function campaignPublish(confirmation = null, preparedTicket = null) {
+  if (!editor || !user || draftBusy || dirty || !editor.id || editor.kind !== 'campaign' || !editor.target_id) return;
+  if (confirmation && preparedTicket !== reviewRequest) return;
+  const current = editor, run = generation, uid = user.uid, ticket = reviewRequest;
+  const active = () => editor === current && generation === run && user?.uid === uid && ticket === reviewRequest;
+  mediaLock(true); $('review-draft').disabled = true;
+  $('draft-status').textContent = confirmation ? 'Publishing the confirmed campaign settings…' : 'Preparing the final publishing summary…';
+  try {
+    const response = confirmation ? await publishCampaignDraft({draft_id:current.id,expected_revision:current.revision,confirmation}) :
+      await prepareCampaignPublish({draft_id:current.id,expected_revision:current.revision});
+    if (!active()) return;
+    const data = response.data;
+    if (!confirmation) {
+      const review = validateReview(data?.review,current);
+      if (data.environment !== 'test' || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
+          !review.checks_passed || !review.changes.length || review.kind !== 'campaign' || !review.target_id ||
+          typeof data.preserved_flags?.approved !== 'boolean' || typeof data.preserved_flags?.enabled !== 'boolean') throw Error('Invalid publishing summary');
+      showReview(review,true);
+      const flags = data.preserved_flags;
+      $('draft-review').append(node('p','Values preserved: Approved: ' + display('approved',flags.approved) + ' · Enabled: ' + display('enabled',flags.enabled)));
+      const publish = node('button','Publish campaign settings','primary'); publish.type = 'button';
+      publish.onclick = () => campaignPublish(data.confirmation,ticket); $('draft-review').append(publish);
+      $('draft-status').textContent = 'Check the exact changes and warnings above, then choose Publish campaign settings to confirm.';
+    } else {
+      if (data?.environment !== 'test' || data.draft_id !== current.id || data.revision !== current.revision ||
+          data.target_id !== current.target_id || data.settings_published !== true || typeof data.history_id !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(data.history_id) || !Number.isFinite(Date.parse(data.published_at))) throw Error('Invalid publication receipt');
+      await load();
+      if (user?.uid === uid) notice('Campaign settings published in the test project. Approval and enabled values were preserved.');
+    }
+  } catch (error) {
+    if (!active()) return;
+    invalidateReview();
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff publishing access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    $('draft-status').textContent = error?.code?.includes('aborted') ?
+      'The draft or stored catalog changed. Review again and prepare a new publishing summary.' :
+      confirmation ? 'Publication could not be confirmed. Refresh the library and review the current campaign before trying again; the request may have completed.' :
+      'A publishing summary could not be prepared. Review the saved draft and correct any blocking issues, then try again.';
+  } finally {
+    if (generation === run && user?.uid === uid && editor === current) { mediaLock(false); $('review-draft').disabled = false; }
+  }
 }
 $('review-draft').onclick = async () => {
   if (!editor || !user || draftBusy) return;
@@ -788,7 +838,7 @@ $('email-form').onsubmit = async event => {
 };
 $('email-retry').onclick = resetLink;
 $('sign-out').onclick = async () => {
-  if ((dirty || draftBusy) && !window.confirm('Leave this editor and sign out? Any unsaved changes will be discarded. A save already sent may still finish.')) return;
+  if ((dirty || draftBusy) && !window.confirm('Leave this editor and sign out? Any unsaved changes will be discarded. A save or publication already sent may still finish.')) return;
   ++generation; clearLibrary(); resetLink(); $('email').value = '';
   try { await signOut(auth); } catch { notice('Sign-out could not finish. Close this tab to end this session.',true); }
 };
