@@ -29,8 +29,8 @@
 .upload-controls .media-tabs button{padding:8px 14px;font-size:13px}
 .upload-layout{justify-content:center;padding:24px 8px}
 
-/* Scale the whole site to 56% so more fits above the fold */
-html{zoom:.5625}
+/* Scale the whole site to 70% so more fits above the fold */
+html{zoom:.7031}
 
 /* Toolbar: compact filters, draft buttons beside them, refresh at the right */
 .toolbar{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px;margin-bottom:20px}
