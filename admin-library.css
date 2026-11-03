@@ -5,3 +5,16 @@
 /* Compact spacing keeps the library useful on laptop screens. */
 .page{padding:24px 30px 36px}header{margin-bottom:20px}h1{font-size:32px}h2{font-size:23px}.panel{padding:26px;border-radius:22px}button{font-size:14px;padding:11px 17px;border-radius:10px}.banner{padding:9px 15px;margin-bottom:18px;font-size:11px}.toolbar{gap:18px;margin-bottom:20px}label{font-size:14px}input,select,textarea{font-size:14px;padding:12px 15px;min-height:44px}select{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%23172747' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:35px}.library-navigation{gap:16px;margin-bottom:20px}.tabs button{font-size:14px;padding:9px 17px}#summary{font-size:14px;margin-bottom:20px}.workspace{gap:22px}.records{gap:10px}.record{padding:13px 18px;font-size:15px;border-radius:15px}.record small{font-size:13px}#details{padding:24px;min-height:340px}#details h2{margin-bottom:18px}.detail-tabs{padding-bottom:11px;margin-bottom:18px}.detail-tabs button{font-size:14px;padding:7px 12px}dt{font-size:13px;margin-top:17px}dd{font-size:14px}.nested p{font-size:14px}.related{margin-top:20px}.read-time{font-size:12px;margin-top:22px}.editor-grid{gap:23px}.field-grid{gap:18px}.choices label{min-height:44px;padding:11px 13px}.field-help{font-size:12px}.section-heading{font-size:12px;margin-bottom:15px}.disclosure{padding:18px}.disclosure-heading strong{font-size:13px}.disclosure-count{font-size:12px}.phone-frame{max-width:220px}.upload-layout{padding:16px;gap:28px}#draft-form>.actions{padding-top:20px;margin-top:20px}#draft-metadata{font-size:12px}
 @media(max-width:600px){.page{padding:20px 16px}.panel{padding:18px}h1{font-size:29px}.tabs button{padding:9px 12px}.upload-layout{padding:12px 0}.media-tabs button{font-size:12px;padding:9px}}
+
+/* Campaign Site look: phone preview fills the screen, with a soft file picker bar */
+.phone-frame{max-width:210px;padding:0;border-width:6px;border-radius:40px;aspect-ratio:393/852}
+.phone-frame.android{border-radius:26px;aspect-ratio:412/915}
+.phone-frame:before{z-index:2}
+.phone-frame.android:before{width:14px;height:14px;left:calc(50% - 7px);top:8px}
+.phone-screen{width:100%;height:100%}
+.phone-screen img,.phone-screen video{width:100%;height:100%;max-height:none!important;object-fit:cover;display:block}
+.upload-layout{grid-template-columns:minmax(0,1fr) 210px;justify-content:center;gap:40px}
+.upload-controls input[type=file]{background:#d5e0f2;color:#4a5f86;border-radius:10px;padding:6px;width:100%;font-weight:600}
+.upload-controls input[type=file]::file-selector-button{background:#172747;color:#fff;padding:9px 14px;border:0;border-radius:8px;margin-right:12px;font:inherit;font-size:13px;font-weight:600}
+.media-tabs button[aria-pressed="true"]{background:#d5e0f2}
+@media(max-width:850px){.upload-layout{grid-template-columns:1fr;justify-items:center}.upload-controls{width:100%}}
