@@ -228,7 +228,7 @@ function validateDraftList(data) {
   return data.drafts;
 }
 function draftMetadata(draft) {
-  return draft.id ? 'Saved ' + new Date(draft.updated_at).toLocaleString() + ' · Staff ID: ' + draft.updated_by + ' · Revision ' + draft.revision : 'Not saved yet';
+  return draft.id ? 'Saved ' + new Date(draft.updated_at).toLocaleString() + ' · Staff ID: ' + draft.updated_by + ' · Revision ' + draft.revision + ' · Draft ID: ' + draft.id : 'Not saved yet';
 }
 function renderDrafts() {
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed','false');
@@ -513,7 +513,7 @@ function reviewValue(key, value) {
 function showReview(data) {
   const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
   const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
-  box.append(heading,node('p','Saved revision ' + data.revision + ' · Reviewed ' + new Date(data.reviewed_at).toLocaleString(),'muted'),
+  box.append(heading,node('p','Saved revision ' + data.revision + ' · Draft ID: ' + data.draft_id + ' · Reviewed ' + new Date(data.reviewed_at).toLocaleString(),'muted'),
     node('p','Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
   for (const severity of ['error','warning']) {
     const items = data.issues.filter(issue => issue.severity === severity);
