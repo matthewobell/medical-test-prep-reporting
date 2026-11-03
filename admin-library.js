@@ -427,6 +427,19 @@ function disclosure(title,subtitle,count) {
   heading.append(node('strong',title),node('span',subtitle,'field-help'));
   summary.append(heading,node('span',count,'disclosure-count')); box.append(summary); return box;
 }
+// Show the chosen file in the phone frame straight away, before it uploads.
+function showLocal(input, slot, player) {
+  const f = input.files?.[0];
+  if (!f) return;
+  const ok = slot === 'video' ? f.type === 'video/mp4' : ['image/jpeg','image/png','image/webp'].includes(f.type);
+  if (!ok || f.size > (slot === 'video' ? 50 : 10) * 1024 * 1024) return;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = URL.createObjectURL(f);
+  const el = node(slot === 'video' ? 'video' : 'img');
+  el.src = previewUrl; el.dataset.draftPreview = '';
+  if (slot === 'video') { el.controls = true; el.muted = true; el.playsInline = true; } else el.alt = 'Selected file preview';
+  player.replaceChildren(el);
+}
 function uploadControls() {
   const box = disclosure('Private draft media','Image, video and video cover','3 uploads');
   box.append(node('p',editor.id ? 'Upload a file, then save the draft to attach it. Existing uploaded files are kept; replacing an attachment does not delete files.' :
@@ -455,7 +468,7 @@ function uploadControls() {
       button.onclick = () => { phone.className = 'phone-frame' + (device === 'Android' ? ' android' : ''); deviceButtons.forEach(other => other.setAttribute('aria-pressed',String(other === button))); };
       deviceButtons.push(button); devices.append(button);
     }
-    file.onchange = () => uploadMedia(slot,file,status,progress);
+    file.onchange = () => { showLocal(file, slot, player); uploadMedia(slot,file,status,progress); };
     preview.onclick = () => previewMedia(slot,preview,status,player);
     controls.append(label,file,help,status,progress,preview,node('p','Preview frame','field-help'),devices,node('p','Browser preview of the saved file. Native app layout may differ.','field-help'));
     wrap.append(controls,phone); zone.append(wrap);
@@ -497,7 +510,7 @@ async function uploadMedia(slot,input,status,progress) {
     const result = completed.data;
     if (result.environment !== 'test' || result.asset?.status !== 'ready' || result.asset.id !== data.asset.id || result.asset.slot !== slot) throw Error('Invalid completion');
     current.fields.media_assets[slot] = result.asset.id; dirty = true; invalidateReview();
-    status.textContent = 'Upload checked. Click Save draft to attach this file, then reopen its preview.';
+    status.textContent = 'Upload checked. Click Save draft to attach this file.';
     progress.value = 100;
   } catch (error) {
     if (!active()) return;
@@ -530,7 +543,7 @@ async function previewMedia(slot,button,status,player) {
     // Keep only one local preview URL alive at a time.
     for (const element of document.querySelectorAll('[data-draft-preview]')) element.remove();
     const element = node(slot === 'video' ? 'video' : 'img'); element.src = previewUrl;
-    element.dataset.draftPreview = ''; element.style.maxWidth = '100%'; element.style.maxHeight = '400px';
+    element.dataset.draftPreview = '';
     if (slot === 'video') { element.controls = true; element.muted = true; } else element.alt = 'Private creative preview';
     player.replaceChildren(element); status.textContent = 'Private preview loaded. This does not serve an ad or record an impression.';
   } catch {
