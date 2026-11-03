@@ -18,7 +18,7 @@ const prepareUpload = httpsCallable(getFunctions(app, config.region), 'prepare_a
 const completeUpload = httpsCallable(getFunctions(app, config.region), 'complete_ad_upload');
 let uploadTask = null, previewUrl = null;
 let drafts = [], editor = null, editorRead = null, dirty = false, draftBusy = false, draftRequest = 0;
-let section = 'sponsors', selected = null;
+let section = 'campaigns', selected = null;
 let remembered = {}, detailTab = 'Overview';
 let emailLink = isSignInWithEmailLink(auth, window.location.href) ? window.location.href : '';
 const labels = { name:'Name', sponsor_id:'Sponsor', campaign_id:'Campaign', enabled:'Enabled', approved:'Approved',
@@ -56,9 +56,12 @@ function clearLibrary() {
   $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; $('draft-status').textContent = '';
   $('library').hidden = true; $('loading').hidden = true; $('auth-panel').hidden = false;
   $('records').replaceChildren(); $('details').replaceChildren(); $('fetched').textContent = '';
-  $('sponsor-filter').replaceChildren(new Option('Sponsor','all'));
-  $('library-filters').hidden = true; $('library-search').value = ''; remembered = {}; section = 'sponsors'; detailTab = 'Overview';
-  $('campaign-filter').replaceChildren(new Option('Campaign','all'));
+  $('sponsor-filter').replaceChildren(new Option('All sponsors','all'));
+  $('workspace-navigation').hidden = true;
+  for (const id of ['campaign-count','creative-count','draft-count']) $(id).textContent = '0';
+  $('record-head').replaceChildren();
+  $('library-filters').hidden = true; $('library-search').value = ''; $('record-status').value = 'all'; remembered = {}; section = 'campaigns'; detailTab = 'Overview';
+  $('campaign-filter').replaceChildren(new Option('All campaigns','all'));
 }
 function safeUrl(value) {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password; }
@@ -99,7 +102,7 @@ function localTime(value) {
 }
 function selectionKey() { return 'campaign-library-selection-v1:' + user.uid; }
 function restoreSelection() {
-  remembered = {}; section = 'sponsors'; selected = null;
+  remembered = {}; section = 'campaigns'; selected = null;
   try {
     const saved = JSON.parse(window.localStorage.getItem(selectionKey()));
     if (saved && ['sponsors','campaigns','creatives','drafts'].includes(saved.section)) {
@@ -151,7 +154,7 @@ function display(key, value) {
   return String(value);
 }
 function detail(row) {
-  $('details').replaceChildren(node('h2', row.name || row.id,'record-heading'));
+  $('details').replaceChildren(node('h2', row.name || row.id,'workspace-title'));
   const groups = section === 'campaigns' ? [
     ['Overview',['name','sponsor_id','approved','enabled']],
     ['Schedule',['start_at','end_at','share_schedule']],
@@ -218,14 +221,50 @@ function detail(row) {
   if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign’s exposure share.','muted'));
 }
 function updateCampaigns() {
-  $('campaign-filter').replaceChildren(new Option('Campaign','all'));
+  $('campaign-filter').replaceChildren(new Option('All campaigns','all'));
   for (const row of catalog.campaigns.filter(row => $('sponsor-filter').value === 'all' || row.sponsor_id === $('sponsor-filter').value)) {
     $('campaign-filter').append(new Option(row.name || row.id,row.id));
   }
 }
+function matchesStatus(row) {
+  const status = $('record-status').value;
+  return status === 'all' || status === 'approved' && row.approved === true || status === 'unapproved' && row.approved === false || status === 'enabled' && row.enabled === true || status === 'disabled' && row.enabled === false;
+}
+function renderTable(rows) {
+  const columns = section === 'campaigns' ? ['Campaign','Approval','Enabled','Platforms','Exposure share','Ad creatives'] :
+    section === 'creatives' ? ['Ad creative','Approval','Enabled','Platforms','Rotation weight'] :
+    section === 'sponsors' ? ['Sponsor','Enabled','Campaigns'] : ['Draft','Type','Saved','Revision'];
+  const header = node('tr'); for (const title of columns) header.append(node('th',title));
+  $('record-head').replaceChildren(header); $('records').replaceChildren();
+  if (!rows.length) { const tr = node('tr'), td = node('td','No records match these filters.','empty'); td.colSpan = columns.length; tr.append(td); $('records').append(tr); return; }
+  for (const row of rows) {
+    const tr = node('tr',undefined,row.id === selected ? 'selected' : '');
+    const td = node('td'), button = node('button',row.name || row.id,'name-button');
+    button.setAttribute('aria-pressed',String(row.id === selected)); button.onclick = () => selectRecord(row.id); td.append(button);
+    const parent = section === 'campaigns' ? name('sponsors',row.sponsor_id) : section === 'creatives' ? name('campaigns',row.campaign_id) : row.id;
+    td.append(node('small',parent)); tr.append(td);
+    const approval = value => { const cell = node('td'); cell.append(node('span',value === true ? 'Approved' : value === false ? 'Not approved' : 'Not set',value === true ? 'badge' : 'badge draft')); return cell; };
+    const enabled = value => node('td',value === true ? 'Yes' : value === false ? 'No' : 'Not set');
+    if (section === 'campaigns') {
+      const shares = [...new Set((row.share_schedule || []).map(entry => entry.percent == null ? 'Not set' : entry.percent + '%'))].join(', ') || 'Not set';
+      tr.append(approval(row.approved),enabled(row.enabled),node('td',display('platforms',row.platforms)),node('td',shares),node('td',String(catalog.creatives.filter(item => item.campaign_id === row.id).length)));
+    } else if (section === 'creatives') tr.append(approval(row.approved),enabled(row.enabled),node('td',display('platforms',row.platforms)),node('td',display('rotation_weight',row.rotation_weight)));
+    else if (section === 'sponsors') tr.append(enabled(row.enabled),node('td',String(catalog.campaigns.filter(item => item.sponsor_id === row.id).length)));
+    else tr.append(node('td',row.kind === 'creative' ? 'Creative draft' : 'Campaign draft'),node('td',localTime(row.updated_at)),node('td',String(row.revision)));
+    tr.onclick = event => { if (!event || event.target !== button) selectRecord(row.id); };
+    $('records').append(tr);
+  }
+}
 function render() {
   if (!catalog || !user) return;
-  $('library-search').placeholder = 'Search for ' + section;
+  const titles = {campaigns:'Campaigns',creatives:'Ad creatives',sponsors:'Sponsors',drafts:'Drafts'};
+  $('browse-title').textContent = titles[section];
+  $('browse-description').textContent = section === 'drafts' ? 'Continue saved work without changing ad delivery.' : section === 'campaigns' ? 'Manage campaigns and the ads within them.' : section === 'creatives' ? 'Manage the ads within your campaigns.' : 'Inspect sponsor records and their campaigns.';
+  $('library-search').placeholder = 'Search ' + titles[section].toLowerCase() + ' by name or ID';
+  $('campaign-count').textContent = String(catalog.campaigns.length);
+  $('creative-count').textContent = String(catalog.creatives.length);
+  $('draft-count').textContent = String(drafts.length);
+  $('record-status').disabled = section === 'drafts';
   $('tab-drafts').setAttribute('aria-pressed',String(section === 'drafts'));
   $('sponsor-filter').disabled = section === 'drafts';
   if (section === 'drafts') { renderDrafts(); return; }
@@ -233,26 +272,12 @@ function render() {
   const campaignIds = new Set(catalog.campaigns.filter(row =>
     (sponsor === 'all' || row.sponsor_id === sponsor) && (campaign === 'all' || row.id === campaign)).map(row => row.id));
   const rows = catalog[section].filter(row => section === 'sponsors' ? sponsor === 'all' || row.id === sponsor :
-    section === 'campaigns' ? campaignIds.has(row.id) : campaignIds.has(row.campaign_id)).filter(matchesSearch);
+    section === 'campaigns' ? campaignIds.has(row.id) : campaignIds.has(row.campaign_id)).filter(matchesSearch).filter(matchesStatus);
   const currentRow = chooseRow(rows);
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed',String(section === type));
   $('campaign-filter').disabled = section === 'sponsors';
   $('summary').textContent = rows.length + ' ' + section + ' · ' + catalog.sponsors.length + ' sponsors, ' + catalog.campaigns.length + ' campaigns, ' + catalog.creatives.length + ' creatives in this test catalog';
-  $('records').replaceChildren();
-  if (!rows.length) $('records').append(node('p','No records match these filters.','empty'));
-  for (const row of rows) {
-    const button = node('button',row.name || row.id,'record');
-    const flags = node('div',undefined,'card-flags');
-    if (section === 'creatives') flags.append(node('span','Weight: ' + display('rotation_weight',row.rotation_weight)));
-    for (const key of section === 'sponsors' ? ['enabled'] : ['approved','enabled']) {
-      const flag = node('span',labels[key] + ': ');
-      flag.append(node('em',display(key,row[key]),row[key] === true ? 'yes' : row[key] === false ? 'no' : 'unknown')); flags.append(flag);
-    }
-    button.append(flags);
-    button.setAttribute('aria-pressed',String(selected === row.id));
-    button.onclick = () => selectRecord(row.id);
-    $('records').append(button);
-  }
+  renderTable(rows);
   if (currentRow) detail(currentRow); else $('details').replaceChildren(node('p','No records match these filters.','empty'));
 }
 async function load() {
@@ -268,7 +293,7 @@ async function load() {
     catalog = validateLibrary(response.data); drafts = validateDraftList(draftResponse.data);
     for (const row of catalog.sponsors) $('sponsor-filter').append(new Option(row.name || row.id,row.id));
     restoreSelection(); updateCampaigns(); render();
-    $('library-filters').hidden = false;
+    $('library-filters').hidden = false; $('workspace-navigation').hidden = false;
     $('library').hidden = false; $('loading').hidden = true;
     $('fetched').textContent = 'Fetched ' + localTime(catalog.fetched_at) + ' (local time). Schedule times use your browser’s local time zone.';
   } catch (error) {
@@ -311,15 +336,7 @@ function renderDrafts() {
   $('campaign-filter').disabled = true;
   const rows = drafts.filter(matchesSearch), currentDraft = chooseRow(rows);
   $('summary').textContent = rows.length + ' drafts · Drafts are shown separately from catalog filters and do not serve ads.';
-  $('records').replaceChildren(); $('details').replaceChildren();
-  if (!rows.length) $('records').append(node('p',drafts.length ? 'No drafts match this search.' : 'No saved drafts yet. Create a campaign or creative draft to begin.','empty'));
-  for (const draft of rows) {
-    const button = node('button',draft.name,'record');
-    button.append(node('small',draft.kind === 'campaign' ? 'Campaign draft' : 'Creative draft'),node('small',draftMetadata(draft)));
-    button.setAttribute('aria-pressed',String(selected === draft.id));
-    button.onclick = () => selectRecord(draft.id);
-    $('records').append(button);
-  }
+  renderTable(rows); $('details').replaceChildren();
   const draft = currentDraft;
   if (!draft) { $('details').append(node('p','No drafts match this search.','empty')); return; }
   $('details').append(node('h2',draft.name));
@@ -779,10 +796,11 @@ $('refresh').onclick = load;
 $('sponsor-filter').onchange = () => { if (!catalog) return; selected = null; updateCampaigns(); render(); };
 $('campaign-filter').onchange = () => { selected = null; render(); };
 function switchSection(type) {
-  section = type; selected = null; detailTab = 'Overview'; $('library-search').value = ''; render();
+  section = type; selected = null; detailTab = 'Overview'; $('library-search').value = ''; $('record-status').value = 'all'; render();
 }
 for (const type of Object.keys(fields)) $('tab-' + type).onclick = () => switchSection(type);
 $('library-search').oninput = () => { selected = null; render(); };
+$('record-status').onchange = () => { selected = null; render(); };
 $('search-form').onsubmit = event => { event.preventDefault(); selected = null; render(); };
 try {
   await setPersistence(auth,browserSessionPersistence);
