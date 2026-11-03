@@ -93,7 +93,7 @@ function display(key, value) {
   if (value == null) return 'Not set';
   if (['start_at','end_at'].includes(key)) {
     const when = new Date(value);
-    return Number.isFinite(when.getTime()) ? when.toISOString() + '\nLocal: ' + when.toLocaleString() : 'Invalid stored date';
+    return Number.isFinite(when.getTime()) ? when.toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'}) : 'Invalid stored date';
   }
   if (key === 'sponsor_id') return name('sponsors', value) + '\nID: ' + value;
   if (key === 'campaign_id') return name('campaigns', value) + '\nID: ' + value;
@@ -213,7 +213,7 @@ async function load() {
     for (const row of catalog.sponsors) $('sponsor-filter').append(new Option(row.name || row.id,row.id));
     updateCampaigns(); render();
     $('library').hidden = false; $('loading').hidden = true;
-    $('fetched').textContent = 'Fetched ' + new Date(catalog.fetched_at).toLocaleString() + ' (local time). Stored schedule times are shown in UTC and local time.';
+    $('fetched').textContent = 'Fetched ' + new Date(catalog.fetched_at).toLocaleString() + ' (local time). Schedule times use your browser’s local time zone.';
   } catch (error) {
     if (run !== generation || user?.uid !== uid) return;
     clearLibrary();
