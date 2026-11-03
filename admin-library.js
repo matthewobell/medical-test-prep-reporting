@@ -12,6 +12,8 @@ const fetchLibrary = httpsCallable(getFunctions(app, config.region), 'get_admin_
 let user = null, catalog = null, generation = 0, appCheck, timer, ready = false, authBusy = false;
 const fetchDrafts = httpsCallable(getFunctions(app, config.region), 'get_ad_drafts');
 const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_draft');
+const fetchReview = httpsCallable(getFunctions(app, config.region), 'review_ad_draft');
+let reviewRequest = 0;
 const prepareUpload = httpsCallable(getFunctions(app, config.region), 'prepare_ad_upload');
 const completeUpload = httpsCallable(getFunctions(app, config.region), 'complete_ad_upload');
 let uploadTask = null, previewUrl = null;
@@ -46,8 +48,10 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  invalidateReview();
   clearMediaPreview();
   catalog = null; selected = null; drafts = []; editor = null; editorRead = null; dirty = false; draftBusy = false; ++draftRequest;
+  $('review-draft').disabled = false;
   $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; $('draft-status').textContent = '';
   $('library').hidden = true; $('loading').hidden = true; $('auth-panel').hidden = false;
   $('records').replaceChildren(); $('details').replaceChildren(); $('fetched').textContent = '';
@@ -336,20 +340,20 @@ function editList(parent, key, values) {
     const readers = keys.map(field => [field,editField(entry,field,value[field])]);
     const row = {entry,read:() => Object.fromEntries(readers.map(([field,read]) => [field,read()]))};
     const remove = node('button','Remove from draft','secondary'); remove.type = 'button';
-    remove.onclick = () => { rows.splice(rows.indexOf(row),1); entry.remove(); add.disabled = false; dirty = true; };
+    remove.onclick = () => { rows.splice(rows.indexOf(row),1); entry.remove(); add.disabled = false; dirty = true; invalidateReview(); };
     entry.append(remove); list.append(entry); rows.push(row); add.disabled = rows.length >= maximum;
   }
   for (const value of values || []) append(value);
-  add.onclick = () => { append(); dirty = true; };
+  add.onclick = () => { append(); dirty = true; invalidateReview(); };
   box.append(list,add); parent.append(box);
   return () => rows.map(row => row.read());
 }
 function openEditor(draft) {
   if (!catalog || !user) return;
-  clearMediaPreview();
+  clearMediaPreview(); invalidateReview();
   ++draftRequest; editor = structuredClone(draft); dirty = false; draftBusy = false;
   if (editor.kind === 'creative') editor.fields.media_assets ||= {};
-  $('draft-fields').disabled = false; $('save-draft').disabled = false; $('close-draft').disabled = false;
+  $('draft-fields').disabled = false; $('save-draft').disabled = false; $('close-draft').disabled = false; $('review-draft').disabled = false;
   $('draft-editor').hidden = false; $('browse-panel').hidden = true; $('reload-draft').hidden = true;
   $('draft-status').textContent = '';
   $('editor-title').textContent = (draft.kind === 'campaign' ? 'Campaign' : 'Creative') + ' draft';
@@ -426,7 +430,7 @@ async function uploadMedia(slot,input,status,progress) {
     if (!active()) return;
     const result = completed.data;
     if (result.environment !== 'test' || result.asset?.status !== 'ready' || result.asset.id !== data.asset.id || result.asset.slot !== slot) throw Error('Invalid completion');
-    current.fields.media_assets[slot] = result.asset.id; dirty = true;
+    current.fields.media_assets[slot] = result.asset.id; dirty = true; invalidateReview();
     status.textContent = 'Upload checked. Click Save draft to attach this file, then reopen its preview.';
     progress.value = 100;
   } catch (error) {
@@ -468,14 +472,98 @@ async function previewMedia(slot,button,status,player) {
   } finally { if (active()) mediaLock(false); }
 }
 
+function invalidateReview() {
+  ++reviewRequest;
+  $('draft-review').replaceChildren(); $('draft-review').hidden = true;
+}
+function validateReview(data, draft) {
+  if (!data || data.environment !== 'test' || data.activation_performed !== false || data.draft_id !== draft.id ||
+      data.revision !== draft.revision || data.kind !== draft.kind || data.target_id !== draft.target_id ||
+      typeof data.checks_passed !== 'boolean' || !Number.isFinite(Date.parse(data.reviewed_at)) ||
+      typeof data.basis !== 'string' || data.basis.length > 2000 || !Array.isArray(data.issues) || data.issues.length > 500 ||
+      !Array.isArray(data.changes) || data.changes.length > 30) throw Error('Invalid review response');
+  for (const issue of data.issues) {
+    if (!issue || !['error','warning'].includes(issue.severity) || typeof issue.field !== 'string' ||
+        typeof issue.message !== 'string' || issue.message.length > 4000) throw Error('Invalid review issue');
+  }
+  if (data.checks_passed === data.issues.some(issue => issue.severity === 'error')) throw Error('Inconsistent review result');
+  const allowed = fields[draft.kind === 'campaign' ? 'campaigns' : 'creatives'].filter(key => !['approved','enabled'].includes(key));
+  if (draft.kind === 'creative') allowed.push('media_assets');
+  const seen = new Set();
+  for (const change of data.changes) {
+    if (!change || !allowed.includes(change.field) || seen.has(change.field) ||
+        !Object.hasOwn(change,'before') || !Object.hasOwn(change,'after') ||
+        JSON.stringify(change).length > 100000) throw Error('Invalid proposed changes');
+    seen.add(change.field);
+  }
+  return data;
+}
+function reviewValue(key, value) {
+  if (value == null) return 'Not set';
+  if (key === 'media_assets') return Object.keys(value).length ? Object.keys(value).map(slot =>
+    (slot === 'poster' ? 'Video cover image' : slot === 'video' ? 'Video' : 'Image') + ': private attachment').join('\n') : 'No private attachments';
+  if (['share_schedule','creative_overrides'].includes(key)) {
+    if (!value.length) return 'None';
+    return value.map((entry,index) => key === 'share_schedule' ?
+      'Period ' + (index+1) + ': ' + (entry.percent ?? 'Not set') + '%\n' + display('start_at',entry.start_at) + '\nUntil: ' + display('end_at',entry.end_at) :
+      'Override ' + (index+1) + ': ' + (entry.placement || 'Not set') + ' · Exam: ' + (entry.exam || 'All') + ' · Module: ' + (entry.module || 'All') + '\nCreatives: ' + (entry.creative_ids || []).map(id => name('creatives',id)).join(', ')).join('\n\n');
+  }
+  return display(key,value);
+}
+function showReview(data) {
+  const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
+  const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
+  box.append(heading,node('p','Saved revision ' + data.revision + ' · Reviewed ' + new Date(data.reviewed_at).toLocaleString(),'muted'),
+    node('p','Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
+  for (const severity of ['error','warning']) {
+    const items = data.issues.filter(issue => issue.severity === severity);
+    if (!items.length) continue;
+    box.append(node('h3',severity === 'error' ? 'Blocking issues' : 'Warnings'));
+    const list = node('ul');
+    for (const issue of items) list.append(node('li',(labels[issue.field] || ({media_assets:'Private media',configuration:'Configuration',changes:'Changes',target_id:'Existing record'})[issue.field] || issue.field) + ': ' + issue.message));
+    box.append(list);
+  }
+  box.append(node('h3',data.target_id ? 'Proposed changes to existing record' : 'Proposed new record'));
+  const list = node('dl');
+  for (const change of data.changes) {
+    list.append(node('dt',labels[change.field] || 'Private media'),node('dd','Current: ' + reviewValue(change.field,change.before) + '\nProposed: ' + reviewValue(change.field,change.after)));
+  }
+  box.append(data.changes.length ? list : node('p','No editable field changes.'));
+  heading.focus();
+}
+$('review-draft').onclick = async () => {
+  if (!editor || !user || draftBusy) return;
+  invalidateReview();
+  if (!editor.id || dirty) { $('draft-status').textContent = 'Save your draft changes before reviewing the saved revision.'; return; }
+  const current = editor, run = generation, uid = user.uid, ticket = reviewRequest;
+  const active = () => editor === current && generation === run && user?.uid === uid && ticket === reviewRequest;
+  mediaLock(true); $('review-draft').disabled = true; $('draft-status').textContent = 'Reviewing the saved draft and stored configuration…';
+  try {
+    const response = await fetchReview({draft_id:current.id,expected_revision:current.revision});
+    if (!active()) return;
+    showReview(validateReview(response.data,current)); $('draft-status').textContent = 'Saved draft reviewed. No ad delivery changed.';
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff review access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    $('draft-status').textContent = error?.code?.includes('aborted') ?
+      'This draft changed in another page. Reload its saved version before reviewing.' :
+      'The review could not be completed. Check your connection or ask your administrator to check the stored catalog. No partial review or approval was issued.';
+  } finally {
+    if (generation === run && user?.uid === uid && editor === current) mediaLock(false);
+    if (generation === run) $('review-draft').disabled = false;
+  }
+};
+
 function leaveEditor() {
   if (draftBusy || (dirty && !window.confirm('Discard unsaved draft changes and return to the library?'))) return false;
-  clearMediaPreview();
+  clearMediaPreview(); invalidateReview();
   editor = null; editorRead = null; dirty = false; ++draftRequest;
   $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; render(); return true;
 }
-$('draft-form').oninput = () => { dirty = true; };
-$('draft-form').onchange = () => { dirty = true; };
+$('draft-form').oninput = () => { dirty = true; invalidateReview(); };
+$('draft-form').onchange = () => { dirty = true; invalidateReview(); };
 $('close-draft').onclick = leaveEditor;
 $('new-campaign').onclick = () => openEditor({kind:'campaign',target_id:null,fields:{}});
 $('new-creative').onclick = () => openEditor({kind:'creative',target_id:null,fields:{}});
@@ -490,6 +578,7 @@ $('draft-form').onsubmit = async event => {
   let values;
   try { values = editorRead(); }
   catch { $('draft-status').textContent = 'Check the dates and field values before saving.'; return; }
+  invalidateReview();
   draftBusy = true; $('draft-fields').disabled = true; $('save-draft').disabled = true; $('close-draft').disabled = true;
   $('reload-draft').hidden = true; $('draft-status').textContent = 'Saving draft…';
   try {
