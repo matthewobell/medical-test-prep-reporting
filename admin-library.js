@@ -104,9 +104,27 @@ function display(key, value) {
 }
 function detail(row) {
   $('details').replaceChildren(node('h2', row.name || row.id));
-  const list = node('dl');
-  list.append(node('dt','Record ID'), node('dd',row.id));
-  for (const key of fields[section]) {
+  const groups = section === 'campaigns' ? [
+    ['Overview',['name','sponsor_id','approved','enabled']],
+    ['Schedule',['start_at','end_at','share_schedule']],
+    ['Targeting',['platforms','placement','exam','module','exclusive','creative_overrides']]
+  ] : section === 'creatives' ? [
+    ['Overview',['name','campaign_id','approved','enabled','rotation_weight']],
+    ['Schedule',['start_at','end_at']],['Targeting',['platforms']],
+    ['Content',['eyebrow_text','headline','body_text','cta_text','click_url','disclaimer_text']],
+    ['Media',['media_type','image_url','video_url','video_poster_image_url','video_muted_by_default']]
+  ] : [['Overview',fields[section]]];
+  const panes = [], buttons = [], nav = node('nav',undefined,'detail-tabs');
+  nav.setAttribute('aria-label','Record detail sections');
+  if (groups.length > 1) $('details').append(nav);
+  for (const [index,[title,keys]] of groups.entries()) {
+  const list = node('dl',undefined,'detail-pane'); list.hidden = index !== 0;
+  const button = node('button',title); button.type = 'button';
+  button.setAttribute('aria-pressed',String(index === 0));
+  button.onclick = () => { panes.forEach((pane,i) => pane.hidden = i !== index); buttons.forEach((tab,i) => tab.setAttribute('aria-pressed',String(i === index))); };
+  panes.push(list); buttons.push(button); nav.append(button);
+  if (index === 0) list.append(node('dt','Record ID'),node('dd',row.id));
+  for (const key of keys) {
     const value = row[key];
     list.append(node('dt', labels[key]));
     const item = node('dd');
@@ -130,6 +148,7 @@ function detail(row) {
     list.append(item);
   }
   $('details').append(list);
+  }
   if (section === 'campaigns' || section === 'creatives') {
     const edit = node('button','Edit as draft'); edit.className = 'related';
     edit.onclick = () => openEditor({kind:section === 'campaigns' ? 'campaign' : 'creative', target_id:row.id,
@@ -245,9 +264,14 @@ function renderDrafts() {
   }
   const draft = drafts.find(row => row.id === selected);
   if (!draft) { $('details').append(node('p','Select a draft to continue editing.','empty')); return; }
-  $('details').append(node('h2',draft.name),node('p',draftMetadata(draft),'muted'),
-    node('p',draft.target_id ? 'Draft of existing record: ' + draft.target_id : 'Draft for a new record','muted'));
-  const button = node('button','Open draft');
+  $('details').append(node('h2',draft.name));
+  const metadata = node('dl');
+  for (const [title,value] of [['Saved',new Date(draft.updated_at).toLocaleString()],['Revision',String(draft.revision)],
+    ['Staff ID',draft.updated_by],['Draft ID',draft.id],['Status',draft.target_id ? 'Draft of existing record: ' + draft.target_id : 'Draft for a new record']]) {
+    metadata.append(node('dt',title),node('dd',value));
+  }
+  $('details').append(metadata);
+  const button = node('button','Open draft','related');
   button.onclick = () => readDraft(draft.id, button);
   $('details').append(button);
 }
@@ -286,7 +310,7 @@ function localDate(value) {
 }
 let controlNumber = 0;
 function editField(parent, key, value, choices = null) {
-  const box = node('div'), id = 'draft-control-' + (++controlNumber);
+  const box = node('div',undefined,'editor-field field-' + key), id = 'draft-control-' + (++controlNumber);
   const label = node('label',labels[key] || ({percent:'Exposure share (%)',creative_ids:'Allowed creatives'})[key] || key);
   label.htmlFor = id; box.append(label);
   let control, read;
@@ -360,12 +384,34 @@ function openEditor(draft) {
   $('draft-metadata').textContent = draftMetadata(draft) + (draft.target_id ? ' · Based on record: ' + draft.target_id : ' · New record');
   $('editor-fields').replaceChildren();
   const type = draft.kind === 'campaign' ? 'campaigns' : 'creatives', readers = [];
+  const root = $('editor-fields');
+  const details = node('section',undefined,'form-section wide');
+  details.append(node('h3','Details','section-heading'));
+  const grid = node('div',undefined,'field-grid ' + draft.kind + '-grid'); details.append(grid); root.append(details);
+  const parents = {};
+  if (draft.kind === 'campaign') {
+    const targeting = node('section',undefined,'form-section wide'); targeting.append(node('h3','Targeting','section-heading'));
+    const targetGrid = node('div',undefined,'field-grid targeting-grid'); targeting.append(targetGrid); root.append(targeting);
+    for (const key of ['platforms','placement','exam','module','exclusive']) parents[key] = targetGrid;
+    const lists = node('div',undefined,'schedule-grid wide'); root.append(lists);
+    parents.share_schedule = lists; parents.creative_overrides = lists;
+  } else {
+    grid.append(node('p','Rotation weight applies within a campaign, not to its exposure share.','wide field-help'));
+    for (const [title,subtitle,keys] of [
+      ['Copy','Headline, body, button and link',['eyebrow_text','headline','body_text','disclaimer_text','cta_text','click_url']],
+      ['Media links','Type, links and mute setting',['media_type','video_muted_by_default','image_url','video_url','video_poster_image_url']]
+    ]) {
+      const panel = disclosure(title,subtitle,keys.length + ' fields');
+      const content = node('div',undefined,'field-grid'); panel.append(content); root.append(panel);
+      for (const key of keys) parents[key] = content;
+    }
+  }
   for (const key of fields[type].filter(key => !['approved','enabled'].includes(key))) {
     const choices = key === 'sponsor_id' ? catalog.sponsors.map(row => [row.id,row.name || row.id]) :
       key === 'campaign_id' ? catalog.campaigns.map(row => [row.id,row.name || row.id]) : null;
-    readers.push([key,['share_schedule','creative_overrides'].includes(key) ? editList($('editor-fields'),key,draft.fields[key]) : editField($('editor-fields'),key,draft.fields[key],choices)]);
+    const parent = parents[key] || grid;
+    readers.push([key,['share_schedule','creative_overrides'].includes(key) ? editList(parent,key,draft.fields[key]) : editField(parent,key,draft.fields[key],choices)]);
   }
-  if (draft.kind === 'creative') $('editor-fields').append(node('p','Rotation weight applies within a campaign, not to its exposure share. Media fields accept existing HTTPS links. Private uploads below remain attached only to this draft.','wide muted'));
   editorRead = () => ({...Object.fromEntries(readers.map(([key,read]) => [key,read()])),
     ...(editor.kind === 'creative' ? {media_assets:{...editor.fields.media_assets}} : {})});
   if (draft.kind === 'creative') uploadControls();
@@ -375,13 +421,24 @@ function clearMediaPreview() {
   if (uploadTask) { uploadTask.abort(); uploadTask = null; }
   if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
 }
+function disclosure(title,subtitle,count) {
+  const box = node('details',undefined,'disclosure wide');
+  const summary = node('summary'), heading = node('span',undefined,'disclosure-heading');
+  heading.append(node('strong',title),node('span',subtitle,'field-help'));
+  summary.append(heading,node('span',count,'disclosure-count')); box.append(summary); return box;
+}
 function uploadControls() {
-  const box = node('fieldset',undefined,'wide'); box.append(node('legend','Private draft media'));
+  const box = disclosure('Private draft media','Image, video and video cover','3 uploads');
   box.append(node('p',editor.id ? 'Upload a file, then save the draft to attach it. Existing uploaded files are kept; replacing an attachment does not delete files.' :
     'Save this creative draft first to enable uploads.','field-help'));
-  const zone = node('div',undefined,'draft-list');
+  const tabs = node('nav',undefined,'media-tabs'); tabs.setAttribute('aria-label','Private media slots');
+  const zone = node('div',undefined,'draft-list'), slots = [], buttons = []; box.append(tabs);
   for (const [slot,title] of [['image','Creative image'],['video','Creative video'],['poster','Video cover image']]) {
-    const wrap = node('div'), id = 'upload-' + slot;
+    const wrap = node('div',undefined,'upload-layout'), id = 'upload-' + slot;
+    wrap.hidden = slot !== 'image'; slots.push(wrap);
+    const tab = node('button',title); tab.type = 'button'; tab.setAttribute('aria-pressed',String(slot === 'image'));
+    tab.onclick = () => { slots.forEach(pane => pane.hidden = pane !== wrap); buttons.forEach(button => button.setAttribute('aria-pressed',String(button === tab))); };
+    buttons.push(tab); tabs.append(tab);
     const label = node('label',title); label.htmlFor = id;
     const file = node('input'); file.id = id; file.type = 'file'; file.accept = slot === 'video' ? 'video/mp4' : 'image/jpeg,image/png,image/webp';
     file.disabled = !editor.id;
@@ -389,10 +446,19 @@ function uploadControls() {
     const status = node('p',editor.fields.media_assets[slot] ? 'A private file is attached to this draft.' : 'No private file attached.','muted'); status.setAttribute('role','status');
     const progress = node('progress'); progress.max = 100; progress.value = 0; progress.hidden = true; progress.setAttribute('aria-label',title + ' upload progress');
     const preview = node('button','Preview saved file','secondary'); preview.type = 'button'; preview.hidden = !editor.fields.media_assets[slot];
-    const player = node('div');
+    const player = node('div',undefined,'phone-screen');
+    const phone = node('div',undefined,'phone-frame'); phone.append(player);
+    const controls = node('div',undefined,'upload-controls'), devices = node('div',undefined,'media-tabs');
+    const deviceButtons = [];
+    for (const device of ['iPhone','Android']) {
+      const button = node('button',device); button.type = 'button'; button.setAttribute('aria-pressed',String(device === 'iPhone'));
+      button.onclick = () => { phone.className = 'phone-frame' + (device === 'Android' ? ' android' : ''); deviceButtons.forEach(other => other.setAttribute('aria-pressed',String(other === button))); };
+      deviceButtons.push(button); devices.append(button);
+    }
     file.onchange = () => uploadMedia(slot,file,status,progress);
     preview.onclick = () => previewMedia(slot,preview,status,player);
-    wrap.append(label,file,help,status,progress,preview,player); zone.append(wrap);
+    controls.append(label,file,help,status,progress,preview,node('p','Preview frame','field-help'),devices,node('p','Browser preview of the saved file. Native app layout may differ.','field-help'));
+    wrap.append(controls,phone); zone.append(wrap);
   }
   box.append(zone); $('editor-fields').append(box);
 }
