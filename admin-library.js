@@ -38,6 +38,10 @@ function node(tag, text, className) {
   if (className) element.className = className;
   return element;
 }
+const fmt = value => {
+  const d = new Date(value);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'}) : 'Invalid date';
+};
 function notice(text, error = false) {
   clearTimeout(timer); $('notice').textContent = text; $('notice').hidden = false;
   $('notice').setAttribute('role', error ? 'alert' : 'status');
@@ -93,7 +97,7 @@ function display(key, value) {
   if (value == null) return 'Not set';
   if (['start_at','end_at'].includes(key)) {
     const when = new Date(value);
-    return Number.isFinite(when.getTime()) ? when.toLocaleString(undefined,{year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'}) : 'Invalid stored date';
+    return Number.isFinite(when.getTime()) ? fmt(value) : 'Invalid stored date';
   }
   if (key === 'sponsor_id') return name('sponsors', value) + '\nID: ' + value;
   if (key === 'campaign_id') return name('campaigns', value) + '\nID: ' + value;
@@ -102,18 +106,18 @@ function display(key, value) {
   if (key === 'exam' || key === 'module') return value || 'Not set';
   return String(value);
 }
-function detail(row) {
+function detail(row, type = section) {
   $('details').replaceChildren(node('h2', row.name || row.id));
-  const groups = section === 'campaigns' ? [
+  const groups = type === 'campaigns' ? [
     ['Overview',['name','sponsor_id','approved','enabled']],
     ['Schedule',['start_at','end_at','share_schedule']],
     ['Targeting',['platforms','placement','exam','module','exclusive','creative_overrides']]
-  ] : section === 'creatives' ? [
+  ] : type === 'creatives' ? [
     ['Overview',['name','campaign_id','approved','enabled','rotation_weight']],
     ['Schedule',['start_at','end_at']],['Targeting',['platforms']],
     ['Content',['eyebrow_text','headline','body_text','cta_text','click_url','disclaimer_text']],
     ['Media',['media_type','image_url','video_url','video_poster_image_url','video_muted_by_default']]
-  ] : [['Overview',fields[section]]];
+  ] : [['Overview',fields[type]]];
   const panes = [], buttons = [], nav = node('nav',undefined,'detail-tabs');
   nav.setAttribute('aria-label','Record detail sections');
   if (groups.length > 1) $('details').append(nav);
@@ -149,23 +153,23 @@ function detail(row) {
   }
   $('details').append(list);
   }
-  if (section === 'campaigns' || section === 'creatives') {
+  if (type === 'campaigns' || type === 'creatives') {
     const edit = node('button','Edit as draft'); edit.className = 'related';
-    edit.onclick = () => openEditor({kind:section === 'campaigns' ? 'campaign' : 'creative', target_id:row.id,
-      fields:Object.fromEntries(fields[section].filter(key => !['approved','enabled'].includes(key)).map(key => [key,row[key]]))});
+    edit.onclick = () => openEditor({kind:type === 'campaigns' ? 'campaign' : 'creative', target_id:row.id,
+      fields:Object.fromEntries(fields[type].filter(key => !['approved','enabled'].includes(key)).map(key => [key,row[key]]))});
     $('details').append(edit);
   }
-  if (section === 'sponsors' || section === 'campaigns') {
+  if (type === 'sponsors' || type === 'campaigns') {
     const related = node('div',undefined,'related');
-    const button = node('button',section === 'sponsors' ? 'View campaigns' : 'View creatives');
+    const button = node('button',type === 'sponsors' ? 'View campaigns' : 'View creatives');
     button.onclick = () => {
-      if (section === 'sponsors') { $('sponsor-filter').value = row.id; updateCampaigns(); section = 'campaigns'; }
+      if (type === 'sponsors') { $('sponsor-filter').value = row.id; updateCampaigns(); section = 'campaigns'; }
       else { $('campaign-filter').value = row.id; section = 'creatives'; }
       selected = null; render();
     };
     related.append(button); $('details').append(related);
   }
-  if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign’s exposure share.','muted'));
+  if (type === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign’s exposure share.','muted'));
 }
 function updateCampaigns() {
   $('campaign-filter').replaceChildren(new Option('All campaigns','all'));
@@ -197,7 +201,11 @@ function render() {
     $('records').append(button);
   }
   const row = rows.find(row => row.id === selected);
-  if (row) detail(row); else $('details').replaceChildren(node('p','Select a record to inspect its configuration.','empty'));
+  const context = section !== 'sponsors' && campaign !== 'all' ? ['campaigns', catalog.campaigns.find(r => r.id === campaign)] :
+    sponsor !== 'all' ? ['sponsors', catalog.sponsors.find(r => r.id === sponsor)] : null;
+  if (row) detail(row);
+  else if (context?.[1]) detail(context[1], context[0]);
+  else $('details').replaceChildren(node('p','Select a record to inspect its configuration.','empty'));
 }
 async function load() {
   if (!user) return;
@@ -213,7 +221,7 @@ async function load() {
     for (const row of catalog.sponsors) $('sponsor-filter').append(new Option(row.name || row.id,row.id));
     updateCampaigns(); render();
     $('library').hidden = false; $('loading').hidden = true;
-    $('fetched').textContent = 'Fetched ' + new Date(catalog.fetched_at).toLocaleString() + ' (local time). Schedule times use your browser’s local time zone.';
+    $('fetched').textContent = 'Fetched ' + fmt(catalog.fetched_at) + ' (local time). Schedule times use your browser’s local time zone.';
   } catch (error) {
     if (run !== generation || user?.uid !== uid) return;
     clearLibrary();
@@ -247,7 +255,7 @@ function validateDraftList(data) {
   return data.drafts;
 }
 function draftMetadata(draft) {
-  return draft.id ? 'Saved ' + new Date(draft.updated_at).toLocaleString() + ' · Staff ID: ' + draft.updated_by + ' · Revision ' + draft.revision + ' · Draft ID: ' + draft.id : 'Not saved yet';
+  return draft.id ? 'Saved ' + fmt(draft.updated_at) + ' · Staff ID: ' + draft.updated_by + ' · Revision ' + draft.revision + ' · Draft ID: ' + draft.id : 'Not saved yet';
 }
 function renderDrafts() {
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed','false');
@@ -266,7 +274,7 @@ function renderDrafts() {
   if (!draft) { $('details').append(node('p','Select a draft to continue editing.','empty')); return; }
   $('details').append(node('h2',draft.name));
   const metadata = node('dl');
-  for (const [title,value] of [['Saved',new Date(draft.updated_at).toLocaleString()],['Revision',String(draft.revision)],
+  for (const [title,value] of [['Saved',fmt(draft.updated_at)],['Revision',String(draft.revision)],
     ['Staff ID',draft.updated_by],['Draft ID',draft.id],['Status',draft.target_id ? 'Draft of existing record: ' + draft.target_id : 'Draft for a new record']]) {
     metadata.append(node('dt',title),node('dd',value));
   }
@@ -592,7 +600,7 @@ function reviewValue(key, value) {
 function showReview(data) {
   const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
   const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
-  box.append(heading,node('p','Saved revision ' + data.revision + ' · Draft ID: ' + data.draft_id + ' · Reviewed ' + new Date(data.reviewed_at).toLocaleString(),'muted'),
+  box.append(heading,node('p','Saved revision ' + data.revision + ' · Draft ID: ' + data.draft_id + ' · Reviewed ' + fmt(data.reviewed_at),'muted'),
     node('p','Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
   for (const severity of ['error','warning']) {
     const items = data.issues.filter(issue => issue.severity === severity);
