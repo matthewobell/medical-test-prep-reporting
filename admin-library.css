@@ -28,3 +28,6 @@
 .upload-controls .media-tabs{max-width:320px}
 .upload-controls .media-tabs button{padding:8px 14px;font-size:13px}
 .upload-layout{justify-content:center;padding:24px 8px}
+
+/* Scale the whole site to 75% so more fits above the fold */
+html{zoom:.75}
