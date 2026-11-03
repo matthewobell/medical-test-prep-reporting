@@ -470,7 +470,7 @@ function uploadControls() {
     }
     file.onchange = () => { showLocal(file, slot, player); uploadMedia(slot,file,status,progress); };
     preview.onclick = () => previewMedia(slot,preview,status,player);
-    controls.append(label,file,help,status,progress,preview,node('p','Preview frame','field-help'),devices,node('p','Browser preview of the saved file. Native app layout may differ.','field-help'));
+    controls.append(label,file,help,status,progress,preview,node('p','Preview on','field-help'),devices,node('p','Browser preview of the saved file. Native app layout may differ.','field-help'));
     wrap.append(controls,phone); zone.append(wrap);
   }
   box.append(zone); $('editor-fields').append(box);
