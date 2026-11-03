@@ -205,7 +205,13 @@ $('refresh').onclick = loadReport;
 function handleAuthUser(user) {
   ++generation; currentUser = user; clearReport(); setBusy(false);
   $('sign-out').hidden = !user;
-  $('account').textContent = user?.email ? 'Signed in: ' + user.email : 'Staff reporting';
+  const account = $('account');
+  account.replaceChildren(user?.email ? 'Signed in as ' + user.email : 'Staff reporting');
+  if (user) {
+    const link = document.createElement('a');
+    link.href = './admin-library.html'; link.textContent = 'Campaign library';
+    account.append(' · ', link);
+  }
   if (emailLink) {
     $('email-sign-in').textContent = 'Confirm email and sign in';
     $('email-sign-in-help').textContent = 'Enter the email address that received this link to finish signing in.';
