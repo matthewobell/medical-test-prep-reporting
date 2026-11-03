@@ -19,6 +19,7 @@ const completeUpload = httpsCallable(getFunctions(app, config.region), 'complete
 let uploadTask = null, previewUrl = null;
 let drafts = [], editor = null, editorRead = null, dirty = false, draftBusy = false, draftRequest = 0;
 let section = 'sponsors', selected = null;
+let remembered = {}, detailTab = 'Overview';
 let emailLink = isSignInWithEmailLink(auth, window.location.href) ? window.location.href : '';
 const labels = { name:'Name', sponsor_id:'Sponsor', campaign_id:'Campaign', enabled:'Enabled', approved:'Approved',
   logo_url:'Logo link', placement:'Placement', exam:'Exam', module:'Module', start_at:'Starts (inclusive)', end_at:'Ends (exclusive)',
@@ -38,10 +39,6 @@ function node(tag, text, className) {
   if (className) element.className = className;
   return element;
 }
-const fmt = value => {
-  const d = new Date(value);
-  return Number.isFinite(d.getTime()) ? d.toLocaleString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'}) : 'Invalid date';
-};
 function notice(text, error = false) {
   clearTimeout(timer); $('notice').textContent = text; $('notice').hidden = false;
   $('notice').setAttribute('role', error ? 'alert' : 'status');
@@ -59,8 +56,9 @@ function clearLibrary() {
   $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; $('draft-status').textContent = '';
   $('library').hidden = true; $('loading').hidden = true; $('auth-panel').hidden = false;
   $('records').replaceChildren(); $('details').replaceChildren(); $('fetched').textContent = '';
-  $('sponsor-filter').replaceChildren(new Option('All sponsors','all'));
-  $('campaign-filter').replaceChildren(new Option('All campaigns','all'));
+  $('sponsor-filter').replaceChildren(new Option('Sponsor','all'));
+  $('library-filters').hidden = true; $('library-search').value = ''; remembered = {}; section = 'sponsors'; detailTab = 'Overview';
+  $('campaign-filter').replaceChildren(new Option('Campaign','all'));
 }
 function safeUrl(value) {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password; }
@@ -93,11 +91,57 @@ function validateLibrary(data) {
   return data;
 }
 function name(type, id) { return catalog[type].find(row => row.id === id)?.name || id || 'Not set'; }
+function localTime(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return 'Invalid stored date';
+  return date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}) + ' at ' +
+    date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}).replace(/\s+([AP]M)/,'$1');
+}
+function selectionKey() { return 'campaign-library-selection-v1:' + user.uid; }
+function restoreSelection() {
+  remembered = {}; section = 'sponsors'; selected = null;
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(selectionKey()));
+    if (saved && ['sponsors','campaigns','creatives','drafts'].includes(saved.section)) {
+      section = saved.section;
+      for (const type of ['sponsors','campaigns','creatives','drafts']) {
+        const id = saved.records?.[type];
+        if (typeof id === 'string' && id.length <= 200 && !id.includes('/')) remembered[type] = id;
+      }
+    }
+  } catch { /* Browsing still works when storage is unavailable. */ }
+}
+function rememberSelection() {
+  if (!user || !catalog) return;
+  try { window.localStorage.setItem(selectionKey(),JSON.stringify({section,records:remembered})); } catch {}
+}
+function chooseRow(rows) {
+  const row = rows.find(row => row.id === selected) || rows.find(row => row.id === remembered[section]) || rows[0];
+  selected = row?.id || null;
+  if (row && !$('library-search').value.trim()) remembered[section] = row.id;
+  rememberSelection(); return row;
+}
+function matchesSearch(row) {
+  const query = $('library-search').value.trim().toLocaleLowerCase();
+  let campaign, sponsor;
+  if (section === 'creatives') campaign = catalog.campaigns.find(item => item.id === row.campaign_id);
+  else if (section === 'campaigns') campaign = row;
+  if (campaign) sponsor = catalog.sponsors.find(item => item.id === campaign.sponsor_id);
+  return [row.id,row.name,row.target_id,row.kind,campaign?.id,campaign?.name,sponsor?.id,sponsor?.name]
+    .filter(Boolean).join(' ').toLocaleLowerCase().includes(query);
+}
+function selectRecord(id) {
+  selected = id; remembered[section] = id; detailTab = 'Overview'; rememberSelection(); render();
+}
+function detailField(list,title,value,wide = false) {
+  const field = node('div',undefined,'detail-field' + (wide ? ' wide' : ''));
+  field.append(node('dt',title),node('dd',value)); list.append(field); return field;
+}
 function display(key, value) {
   if (value == null) return 'Not set';
   if (['start_at','end_at'].includes(key)) {
     const when = new Date(value);
-    return Number.isFinite(when.getTime()) ? fmt(value) : 'Invalid stored date';
+    return Number.isFinite(when.getTime()) ? localTime(value) : 'Invalid stored date';
   }
   if (key === 'sponsor_id') return name('sponsors', value) + '\nID: ' + value;
   if (key === 'campaign_id') return name('campaigns', value) + '\nID: ' + value;
@@ -106,31 +150,33 @@ function display(key, value) {
   if (key === 'exam' || key === 'module') return value || 'Not set';
   return String(value);
 }
-function detail(row, type = section) {
-  $('details').replaceChildren(node('h2', row.name || row.id));
-  const groups = type === 'campaigns' ? [
+function detail(row) {
+  $('details').replaceChildren(node('h2', row.name || row.id,'record-heading'));
+  const groups = section === 'campaigns' ? [
     ['Overview',['name','sponsor_id','approved','enabled']],
     ['Schedule',['start_at','end_at','share_schedule']],
     ['Targeting',['platforms','placement','exam','module','exclusive','creative_overrides']]
-  ] : type === 'creatives' ? [
+  ] : section === 'creatives' ? [
     ['Overview',['name','campaign_id','approved','enabled','rotation_weight']],
     ['Schedule',['start_at','end_at']],['Targeting',['platforms']],
     ['Content',['eyebrow_text','headline','body_text','cta_text','click_url','disclaimer_text']],
     ['Media',['media_type','image_url','video_url','video_poster_image_url','video_muted_by_default']]
-  ] : [['Overview',fields[type]]];
+  ] : [['Overview',fields[section]]];
+  if (!groups.some(([title]) => title === detailTab)) detailTab = 'Overview';
   const panes = [], buttons = [], nav = node('nav',undefined,'detail-tabs');
   nav.setAttribute('aria-label','Record detail sections');
   if (groups.length > 1) $('details').append(nav);
   for (const [index,[title,keys]] of groups.entries()) {
-  const list = node('dl',undefined,'detail-pane'); list.hidden = index !== 0;
+  const list = node('dl',undefined,'detail-pane'); list.hidden = title !== detailTab;
   const button = node('button',title); button.type = 'button';
-  button.setAttribute('aria-pressed',String(index === 0));
-  button.onclick = () => { panes.forEach((pane,i) => pane.hidden = i !== index); buttons.forEach((tab,i) => tab.setAttribute('aria-pressed',String(i === index))); };
+  button.setAttribute('aria-pressed',String(title === detailTab));
+  button.onclick = () => { detailTab = title; panes.forEach((pane,i) => pane.hidden = i !== index); buttons.forEach((tab,i) => tab.setAttribute('aria-pressed',String(i === index))); };
   panes.push(list); buttons.push(button); nav.append(button);
-  if (index === 0) list.append(node('dt','Record ID'),node('dd',row.id));
+  if (index === 0) detailField(list,'Record ID',row.id);
   for (const key of keys) {
     const value = row[key];
-    list.append(node('dt', labels[key]));
+    const field = node('div',undefined,'detail-field' + (['share_schedule','creative_overrides'].includes(key) ? ' wide' : ''));
+    field.append(node('dt',labels[key]));
     const item = node('dd');
     if (key.endsWith('_url') && value && safeUrl(value)) {
       const link = node('a',value); link.href = value; link.target = '_blank'; link.rel = 'noopener noreferrer'; item.append(link);
@@ -149,36 +195,37 @@ function detail(row, type = section) {
         item.append(box);
       }
     } else item.textContent = display(key,value);
-    list.append(item);
+    field.append(item); list.append(field);
   }
   $('details').append(list);
   }
-  if (type === 'campaigns' || type === 'creatives') {
+  if (section === 'campaigns' || section === 'creatives') {
     const edit = node('button','Edit as draft'); edit.className = 'related';
-    edit.onclick = () => openEditor({kind:type === 'campaigns' ? 'campaign' : 'creative', target_id:row.id,
-      fields:Object.fromEntries(fields[type].filter(key => !['approved','enabled'].includes(key)).map(key => [key,row[key]]))});
+    edit.onclick = () => openEditor({kind:section === 'campaigns' ? 'campaign' : 'creative', target_id:row.id,
+      fields:Object.fromEntries(fields[section].filter(key => !['approved','enabled'].includes(key)).map(key => [key,row[key]]))});
     $('details').append(edit);
   }
-  if (type === 'sponsors' || type === 'campaigns') {
+  if (section === 'sponsors' || section === 'campaigns') {
     const related = node('div',undefined,'related');
-    const button = node('button',type === 'sponsors' ? 'View campaigns' : 'View creatives');
+    const button = node('button',section === 'sponsors' ? 'View campaigns' : 'View creatives');
     button.onclick = () => {
-      if (type === 'sponsors') { $('sponsor-filter').value = row.id; updateCampaigns(); section = 'campaigns'; }
+      if (section === 'sponsors') { $('sponsor-filter').value = row.id; updateCampaigns(); section = 'campaigns'; }
       else { $('campaign-filter').value = row.id; section = 'creatives'; }
       selected = null; render();
     };
     related.append(button); $('details').append(related);
   }
-  if (type === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign’s exposure share.','muted'));
+  if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign’s exposure share.','muted'));
 }
 function updateCampaigns() {
-  $('campaign-filter').replaceChildren(new Option('All campaigns','all'));
+  $('campaign-filter').replaceChildren(new Option('Campaign','all'));
   for (const row of catalog.campaigns.filter(row => $('sponsor-filter').value === 'all' || row.sponsor_id === $('sponsor-filter').value)) {
     $('campaign-filter').append(new Option(row.name || row.id,row.id));
   }
 }
 function render() {
   if (!catalog || !user) return;
+  $('library-search').placeholder = 'Search for ' + section;
   $('tab-drafts').setAttribute('aria-pressed',String(section === 'drafts'));
   $('sponsor-filter').disabled = section === 'drafts';
   if (section === 'drafts') { renderDrafts(); return; }
@@ -186,7 +233,8 @@ function render() {
   const campaignIds = new Set(catalog.campaigns.filter(row =>
     (sponsor === 'all' || row.sponsor_id === sponsor) && (campaign === 'all' || row.id === campaign)).map(row => row.id));
   const rows = catalog[section].filter(row => section === 'sponsors' ? sponsor === 'all' || row.id === sponsor :
-    section === 'campaigns' ? campaignIds.has(row.id) : campaignIds.has(row.campaign_id));
+    section === 'campaigns' ? campaignIds.has(row.id) : campaignIds.has(row.campaign_id)).filter(matchesSearch);
+  const currentRow = chooseRow(rows);
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed',String(section === type));
   $('campaign-filter').disabled = section === 'sponsors';
   $('summary').textContent = rows.length + ' ' + section + ' · ' + catalog.sponsors.length + ' sponsors, ' + catalog.campaigns.length + ' campaigns, ' + catalog.creatives.length + ' creatives in this test catalog';
@@ -194,18 +242,18 @@ function render() {
   if (!rows.length) $('records').append(node('p','No records match these filters.','empty'));
   for (const row of rows) {
     const button = node('button',row.name || row.id,'record');
-    const parent = section === 'campaigns' ? name('sponsors',row.sponsor_id) : section === 'creatives' ? name('campaigns',row.campaign_id) : row.id;
-    button.append(node('small',parent),node('small','Enabled: ' + display('enabled',row.enabled) + (section === 'sponsors' ? '' : ' · Approved: ' + display('approved',row.approved))));
+    const flags = node('div',undefined,'card-flags');
+    if (section === 'creatives') flags.append(node('span','Weight: ' + display('rotation_weight',row.rotation_weight)));
+    for (const key of section === 'sponsors' ? ['enabled'] : ['approved','enabled']) {
+      const flag = node('span',labels[key] + ': ');
+      flag.append(node('em',display(key,row[key]),row[key] === true ? 'yes' : row[key] === false ? 'no' : 'unknown')); flags.append(flag);
+    }
+    button.append(flags);
     button.setAttribute('aria-pressed',String(selected === row.id));
-    button.onclick = () => { selected = row.id; render(); };
+    button.onclick = () => selectRecord(row.id);
     $('records').append(button);
   }
-  const row = rows.find(row => row.id === selected);
-  const context = section !== 'sponsors' && campaign !== 'all' ? ['campaigns', catalog.campaigns.find(r => r.id === campaign)] :
-    sponsor !== 'all' ? ['sponsors', catalog.sponsors.find(r => r.id === sponsor)] : null;
-  if (row) detail(row);
-  else if (context?.[1]) detail(context[1], context[0]);
-  else $('details').replaceChildren(node('p','Select a record to inspect its configuration.','empty'));
+  if (currentRow) detail(currentRow); else $('details').replaceChildren(node('p','No records match these filters.','empty'));
 }
 async function load() {
   if (!user) return;
@@ -219,9 +267,10 @@ async function load() {
     if (run !== generation || user?.uid !== uid) return;
     catalog = validateLibrary(response.data); drafts = validateDraftList(draftResponse.data);
     for (const row of catalog.sponsors) $('sponsor-filter').append(new Option(row.name || row.id,row.id));
-    updateCampaigns(); render();
+    restoreSelection(); updateCampaigns(); render();
+    $('library-filters').hidden = false;
     $('library').hidden = false; $('loading').hidden = true;
-    $('fetched').textContent = 'Fetched ' + fmt(catalog.fetched_at) + ' (local time). Schedule times use your browser’s local time zone.';
+    $('fetched').textContent = 'Fetched ' + localTime(catalog.fetched_at) + ' (local time). Schedule times use your browser’s local time zone.';
   } catch (error) {
     if (run !== generation || user?.uid !== uid) return;
     clearLibrary();
@@ -255,28 +304,29 @@ function validateDraftList(data) {
   return data.drafts;
 }
 function draftMetadata(draft) {
-  return draft.id ? 'Saved ' + fmt(draft.updated_at) + ' · Staff ID: ' + draft.updated_by + ' · Revision ' + draft.revision + ' · Draft ID: ' + draft.id : 'Not saved yet';
+  return draft.id ? 'Saved ' + localTime(draft.updated_at) + ' · Staff ID: ' + draft.updated_by + ' · Revision ' + draft.revision + ' · Draft ID: ' + draft.id : 'Not saved yet';
 }
 function renderDrafts() {
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed','false');
   $('campaign-filter').disabled = true;
-  $('summary').textContent = drafts.length + ' drafts · Drafts are shown separately from catalog filters and do not serve ads.';
+  const rows = drafts.filter(matchesSearch), currentDraft = chooseRow(rows);
+  $('summary').textContent = rows.length + ' drafts · Drafts are shown separately from catalog filters and do not serve ads.';
   $('records').replaceChildren(); $('details').replaceChildren();
-  if (!drafts.length) $('records').append(node('p','No saved drafts yet. Create a campaign or creative draft to begin.','empty'));
-  for (const draft of drafts) {
+  if (!rows.length) $('records').append(node('p',drafts.length ? 'No drafts match this search.' : 'No saved drafts yet. Create a campaign or creative draft to begin.','empty'));
+  for (const draft of rows) {
     const button = node('button',draft.name,'record');
     button.append(node('small',draft.kind === 'campaign' ? 'Campaign draft' : 'Creative draft'),node('small',draftMetadata(draft)));
     button.setAttribute('aria-pressed',String(selected === draft.id));
-    button.onclick = () => { selected = draft.id; renderDrafts(); };
+    button.onclick = () => selectRecord(draft.id);
     $('records').append(button);
   }
-  const draft = drafts.find(row => row.id === selected);
-  if (!draft) { $('details').append(node('p','Select a draft to continue editing.','empty')); return; }
+  const draft = currentDraft;
+  if (!draft) { $('details').append(node('p','No drafts match this search.','empty')); return; }
   $('details').append(node('h2',draft.name));
   const metadata = node('dl');
-  for (const [title,value] of [['Saved',fmt(draft.updated_at)],['Revision',String(draft.revision)],
+  for (const [title,value] of [['Saved',localTime(draft.updated_at)],['Revision',String(draft.revision)],
     ['Staff ID',draft.updated_by],['Draft ID',draft.id],['Status',draft.target_id ? 'Draft of existing record: ' + draft.target_id : 'Draft for a new record']]) {
-    metadata.append(node('dt',title),node('dd',value));
+    detailField(metadata,title,value);
   }
   $('details').append(metadata);
   const button = node('button','Open draft','related');
@@ -383,6 +433,7 @@ function editList(parent, key, values) {
 function openEditor(draft) {
   if (!catalog || !user) return;
   clearMediaPreview(); invalidateReview();
+  if (draft.id) { section = 'drafts'; selected = draft.id; remembered.drafts = draft.id; rememberSelection(); }
   ++draftRequest; editor = structuredClone(draft); dirty = false; draftBusy = false;
   if (editor.kind === 'creative') editor.fields.media_assets ||= {};
   $('draft-fields').disabled = false; $('save-draft').disabled = false; $('close-draft').disabled = false; $('review-draft').disabled = false;
@@ -435,19 +486,6 @@ function disclosure(title,subtitle,count) {
   heading.append(node('strong',title),node('span',subtitle,'field-help'));
   summary.append(heading,node('span',count,'disclosure-count')); box.append(summary); return box;
 }
-// Show the chosen file in the phone frame straight away, before it uploads.
-function showLocal(input, slot, player) {
-  const f = input.files?.[0];
-  if (!f) return;
-  const ok = slot === 'video' ? f.type === 'video/mp4' : ['image/jpeg','image/png','image/webp'].includes(f.type);
-  if (!ok || f.size > (slot === 'video' ? 50 : 10) * 1024 * 1024) return;
-  if (previewUrl) URL.revokeObjectURL(previewUrl);
-  previewUrl = URL.createObjectURL(f);
-  const el = node(slot === 'video' ? 'video' : 'img');
-  el.src = previewUrl; el.dataset.draftPreview = '';
-  if (slot === 'video') { el.controls = true; el.muted = true; el.playsInline = true; } else el.alt = 'Selected file preview';
-  player.replaceChildren(el);
-}
 function uploadControls() {
   const box = disclosure('Private draft media','Image, video and video cover','3 uploads');
   box.append(node('p',editor.id ? 'Upload a file, then save the draft to attach it. Existing uploaded files are kept; replacing an attachment does not delete files.' :
@@ -476,9 +514,9 @@ function uploadControls() {
       button.onclick = () => { phone.className = 'phone-frame' + (device === 'Android' ? ' android' : ''); deviceButtons.forEach(other => other.setAttribute('aria-pressed',String(other === button))); };
       deviceButtons.push(button); devices.append(button);
     }
-    file.onchange = () => { showLocal(file, slot, player); uploadMedia(slot,file,status,progress); };
+    file.onchange = () => uploadMedia(slot,file,status,progress);
     preview.onclick = () => previewMedia(slot,preview,status,player);
-    controls.append(label,file,help,status,progress,preview,node('p','Preview on','field-help'),devices,node('p','Browser preview of the saved file. Native app layout may differ.','field-help'));
+    controls.append(label,file,help,status,progress,preview,node('p','Preview frame','field-help'),devices,node('p','Browser preview of the saved file. Native app layout may differ.','field-help'));
     wrap.append(controls,phone); zone.append(wrap);
   }
   box.append(zone); $('editor-fields').append(box);
@@ -518,7 +556,7 @@ async function uploadMedia(slot,input,status,progress) {
     const result = completed.data;
     if (result.environment !== 'test' || result.asset?.status !== 'ready' || result.asset.id !== data.asset.id || result.asset.slot !== slot) throw Error('Invalid completion');
     current.fields.media_assets[slot] = result.asset.id; dirty = true; invalidateReview();
-    status.textContent = 'Upload checked. Click Save draft to attach this file.';
+    status.textContent = 'Upload checked. Click Save draft to attach this file, then reopen its preview.';
     progress.value = 100;
   } catch (error) {
     if (!active()) return;
@@ -551,7 +589,7 @@ async function previewMedia(slot,button,status,player) {
     // Keep only one local preview URL alive at a time.
     for (const element of document.querySelectorAll('[data-draft-preview]')) element.remove();
     const element = node(slot === 'video' ? 'video' : 'img'); element.src = previewUrl;
-    element.dataset.draftPreview = '';
+    element.dataset.draftPreview = ''; element.style.maxWidth = '100%'; element.style.maxHeight = '400px';
     if (slot === 'video') { element.controls = true; element.muted = true; } else element.alt = 'Private creative preview';
     player.replaceChildren(element); status.textContent = 'Private preview loaded. This does not serve an ad or record an impression.';
   } catch {
@@ -600,7 +638,7 @@ function reviewValue(key, value) {
 function showReview(data) {
   const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
   const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
-  box.append(heading,node('p','Saved revision ' + data.revision + ' · Draft ID: ' + data.draft_id + ' · Reviewed ' + fmt(data.reviewed_at),'muted'),
+  box.append(heading,node('p','Saved revision ' + data.revision + ' · Draft ID: ' + data.draft_id + ' · Reviewed ' + localTime(data.reviewed_at),'muted'),
     node('p','Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
   for (const severity of ['error','warning']) {
     const items = data.issues.filter(issue => issue.severity === severity);
@@ -654,7 +692,7 @@ $('draft-form').onchange = () => { dirty = true; invalidateReview(); };
 $('close-draft').onclick = leaveEditor;
 $('new-campaign').onclick = () => openEditor({kind:'campaign',target_id:null,fields:{}});
 $('new-creative').onclick = () => openEditor({kind:'creative',target_id:null,fields:{}});
-$('tab-drafts').onclick = () => { section = 'drafts'; selected = null; render(); };
+$('tab-drafts').onclick = () => switchSection('drafts');
 $('reload-draft').onclick = () => {
   if (editor?.id && !draftBusy && (!dirty || window.confirm('Discard your unsaved changes and load the latest saved version?'))) readDraft(editor.id,$('reload-draft'));
 };
@@ -740,7 +778,12 @@ $('sign-out').onclick = async () => {
 $('refresh').onclick = load;
 $('sponsor-filter').onchange = () => { if (!catalog) return; selected = null; updateCampaigns(); render(); };
 $('campaign-filter').onchange = () => { selected = null; render(); };
-for (const type of Object.keys(fields)) $('tab-' + type).onclick = () => { section = type; selected = null; render(); };
+function switchSection(type) {
+  section = type; selected = null; detailTab = 'Overview'; $('library-search').value = ''; render();
+}
+for (const type of Object.keys(fields)) $('tab-' + type).onclick = () => switchSection(type);
+$('library-search').oninput = () => { selected = null; render(); };
+$('search-form').onsubmit = event => { event.preventDefault(); selected = null; render(); };
 try {
   await setPersistence(auth,browserSessionPersistence);
   onAuthStateChanged(auth,handleUser); ready = true; authControls(false);
