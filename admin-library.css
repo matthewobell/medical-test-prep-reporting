@@ -18,3 +18,13 @@
 .upload-controls input[type=file]::file-selector-button{background:#172747;color:#fff;padding:9px 14px;border:0;border-radius:8px;margin-right:12px;font:inherit;font-size:13px;font-weight:600}
 .media-tabs button[aria-pressed="true"]{background:#d5e0f2}
 @media(max-width:850px){.upload-layout{grid-template-columns:1fr;justify-items:center}.upload-controls{width:100%}}
+
+/* Tab bars: darker track so they read as a control inside the card */
+.disclosure .media-tabs{background:#13233f;border-radius:12px;padding:4px;gap:4px}
+.disclosure .media-tabs button{padding:9px 14px;font-size:14px;font-weight:600;border-radius:9px}
+.disclosure .media-tabs button[aria-pressed="false"]{color:#c5d4e9}
+.upload-controls{display:flex;flex-direction:column;gap:12px;max-width:420px;min-width:0}
+.upload-controls>*{margin:0}
+.upload-controls .media-tabs{max-width:320px}
+.upload-controls .media-tabs button{padding:8px 14px;font-size:13px}
+.upload-layout{justify-content:center;padding:24px 8px}
