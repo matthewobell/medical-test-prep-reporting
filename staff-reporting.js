@@ -140,12 +140,13 @@ function render() {
     card.append(title, description, number); $('cards').append(card);
   }
   const AP_MONTHS = ['Jan.', 'Feb.', 'March', 'April', 'May', 'June', 'July', 'Aug.', 'Sept.', 'Oct.', 'Nov.', 'Dec.'];
+  const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const formatDay = day => {
     const d = new Date(day + 'T00:00:00Z');
-    return `${AP_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+    return `${WEEKDAYS[d.getUTCDay()]}, ${AP_MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
   };
   const when = new Date(report.fetched_at);
-  const fetched = `${AP_MONTHS[when.getMonth()]} ${when.getDate()}, ${when.getFullYear()}, ` +
+  const fetched = `${WEEKDAYS[when.getDay()]}, ${AP_MONTHS[when.getMonth()]} ${when.getDate()}, ${when.getFullYear()}, ` +
     new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(when);
   $('period').textContent = `${formatDay(report.start_date)} through ${formatDay(report.end_date)} | UTC | Fetched ${fetched} (local time)`;
   $('dashboard-loading').hidden = true;
