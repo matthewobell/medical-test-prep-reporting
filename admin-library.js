@@ -17,6 +17,8 @@ const prepareCampaignPublish = httpsCallable(getFunctions(app, config.region), '
 const publishCampaignDraft = httpsCallable(getFunctions(app, config.region), 'publish_campaign_draft');
 const prepareCreativePublish = httpsCallable(getFunctions(app, config.region), 'prepare_creative_publish');
 const publishCreativeDraft = httpsCallable(getFunctions(app, config.region), 'publish_creative_draft');
+const requestPublishedPreview = httpsCallable(getFunctions(app, config.region), 'preview_published_media');
+let publishedPreviewRequest = 0;
 const requestCampaignPause = httpsCallable(getFunctions(app, config.region), 'pause_campaign');
 const requestCampaignRollback = httpsCallable(getFunctions(app, config.region), 'campaign_rollback');
 let rollbackRequest = 0, rollbackBusyTicket = null, rollbackPanel = null;
@@ -164,6 +166,7 @@ function display(key, value) {
   return String(value);
 }
 function detail(row) {
+  ++publishedPreviewRequest;
   ++rollbackRequest; rollbackPanel = null;
   $('details').replaceChildren(node('h2', row.name || row.id,'workspace-title'));
   const groups = section === 'campaigns' ? [
@@ -210,6 +213,17 @@ function detail(row) {
       }
     } else item.textContent = display(key,value);
     field.append(item); list.append(field);
+  }
+  if (section === 'creatives' && title === 'Media') {
+    for (const [slot,key,label] of [['image','image_url','image'],['video','video_url','video'],['poster','video_poster_image_url','cover']]) {
+      if (!row[key]?.startsWith('https://storage.googleapis.com/medical-test-prep-ads-test-published-media/published/')) continue;
+      const field = node('div',undefined,'detail-field wide');
+      const button = node('button','Preview published ' + label); button.type = 'button';
+      const status = node('p',undefined,'muted'); status.setAttribute('role','status');
+      const stage = node('div');
+      button.onclick = () => publishedMediaPreview(row,slot,button,status,stage);
+      field.append(button,status,stage); list.append(field);
+    }
   }
   $('details').append(list);
   }
@@ -339,6 +353,37 @@ async function rollbackCampaign(row,panel,action,historyId = null,confirmation =
   } finally {
     if (rollbackBusyTicket === ticket) rollbackBusyTicket = null;
   }
+}
+async function publishedMediaPreview(row,slot,button,status,stage) {
+  if (!user || editor || section !== 'creatives' || selected !== row.id) return;
+  const run = generation, uid = user.uid, ticket = publishedPreviewRequest;
+  const active = () => generation === run && user?.uid === uid && !editor &&
+    section === 'creatives' && selected === row.id && publishedPreviewRequest === ticket;
+  button.disabled = true; stage.replaceChildren(); status.textContent = 'Preparing a temporary media link...';
+  try {
+    const response = await requestPublishedPreview({creative_id:row.id,slot});
+    if (!active()) return;
+    const data = response.data, url = new URL(data?.url);
+    const original = row[slot === 'image' ? 'image_url' : slot === 'video' ? 'video_url' : 'video_poster_image_url'];
+    if (data.environment !== 'test' || data.creative_id !== row.id || data.slot !== slot ||
+        data.is_preview !== true || data.display_recorded !== false || !safeUrl(url.href) ||
+        url.origin + url.pathname !== original || !url.searchParams.has('X-Goog-Signature') ||
+        !Number.isFinite(Date.parse(data.expires_at)) || Date.parse(data.expires_at) <= Date.now()) throw Error('Invalid preview');
+    const media = node(slot === 'video' ? 'video' : 'img');
+    media.src = url.href; media.referrerPolicy = 'no-referrer'; media.style.maxWidth = '100%'; media.style.maxHeight = '420px';
+    if (slot === 'video') { media.controls = true; media.muted = true; media.playsInline = true; }
+    else media.alt = 'Published creative media preview';
+    media.onerror = () => { if (active()) status.textContent = 'The temporary link was created, but media could not load. Generate a fresh preview or check delivery permissions.'; };
+    media.onload = media.onloadeddata = () => { if (active()) status.textContent = 'Media loaded. Preview only; no ad display or reporting event was recorded.'; };
+    const link = node('a','Open temporary link'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer';
+    stage.append(media,link); status.textContent = 'Temporary link ready until ' + localTime(data.expires_at) + '. Preview only; no ad display recorded.';
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff preview access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    status.textContent = 'Published media preview could not be prepared. Check signing permissions and try again. No ad was activated or counted.';
+  } finally { if (active()) button.disabled = false; }
 }
 function updateCampaigns() {
   $('campaign-filter').replaceChildren(new Option('All campaigns','all'));
