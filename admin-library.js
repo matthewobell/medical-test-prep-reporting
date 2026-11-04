@@ -15,6 +15,8 @@ const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_dr
 const fetchReview = httpsCallable(getFunctions(app, config.region), 'review_ad_draft');
 const prepareCampaignPublish = httpsCallable(getFunctions(app, config.region), 'prepare_campaign_publish');
 const publishCampaignDraft = httpsCallable(getFunctions(app, config.region), 'publish_campaign_draft');
+const prepareCreativePublish = httpsCallable(getFunctions(app, config.region), 'prepare_creative_publish');
+const publishCreativeDraft = httpsCallable(getFunctions(app, config.region), 'publish_creative_draft');
 const requestCampaignPause = httpsCallable(getFunctions(app, config.region), 'pause_campaign');
 const requestCampaignRollback = httpsCallable(getFunctions(app, config.region), 'campaign_rollback');
 let rollbackRequest = 0, rollbackBusyTicket = null, rollbackPanel = null;
@@ -798,7 +800,7 @@ function showReview(data, finalSummary = false) {
   const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
   const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
   box.append(heading,node('p','Saved revision ' + data.revision + ' \u00b7 Draft ID: ' + data.draft_id + ' \u00b7 Reviewed ' + localTime(data.reviewed_at),'muted'),
-    node('p',finalSummary ? 'Final publishing summary. Confirm below to update campaign settings used for ad delivery in the test project.' : 'Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
+    node('p',finalSummary ? 'Final publishing summary. Confirm below to update ' + data.kind + ' settings used for ad delivery in the test project.' : 'Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
   for (const severity of ['error','warning']) {
     const items = data.issues.filter(issue => issue.severity === severity);
     if (!items.length) continue;
@@ -813,41 +815,43 @@ function showReview(data, finalSummary = false) {
     list.append(node('dt',labels[change.field] || 'Private media'),node('dd','Current: ' + reviewValue(change.field,change.before) + '\nProposed: ' + reviewValue(change.field,change.after)));
   }
   box.append(data.changes.length ? list : node('p','No editable field changes.'));
-  if (!finalSummary && data.kind === 'campaign' && data.target_id && data.checks_passed && data.changes.length) {
+  if (!finalSummary && ['campaign','creative'].includes(data.kind) && data.target_id && data.checks_passed && data.changes.length) {
     const prepare = node('button','Prepare publishing summary'); prepare.type = 'button';
     prepare.onclick = () => campaignPublish(); box.append(prepare);
   }
   heading.focus();
 }
 async function campaignPublish(confirmation = null, preparedTicket = null) {
-  if (!editor || !user || draftBusy || dirty || !editor.id || editor.kind !== 'campaign' || !editor.target_id) return;
+  if (!editor || !user || draftBusy || dirty || !editor.id || !['campaign','creative'].includes(editor.kind) || !editor.target_id) return;
   if (confirmation && preparedTicket !== reviewRequest) return;
   const current = editor, run = generation, uid = user.uid, ticket = reviewRequest;
   const active = () => editor === current && generation === run && user?.uid === uid && ticket === reviewRequest;
   mediaLock(true); $('review-draft').disabled = true;
-  $('draft-status').textContent = confirmation ? 'Publishing the confirmed campaign settings\u2026' : 'Preparing the final publishing summary\u2026';
+  $('draft-status').textContent = confirmation ? 'Publishing the confirmed ' + editor.kind + ' settings\u2026' : 'Preparing the final publishing summary\u2026';
   try {
-    const response = confirmation ? await publishCampaignDraft({draft_id:current.id,expected_revision:current.revision,confirmation}) :
-      await prepareCampaignPublish({draft_id:current.id,expected_revision:current.revision});
+    const publishCall = current.kind === 'creative' ? publishCreativeDraft : publishCampaignDraft;
+    const prepareCall = current.kind === 'creative' ? prepareCreativePublish : prepareCampaignPublish;
+    const response = confirmation ? await publishCall({draft_id:current.id,expected_revision:current.revision,confirmation}) :
+      await prepareCall({draft_id:current.id,expected_revision:current.revision});
     if (!active()) return;
     const data = response.data;
     if (!confirmation) {
       const review = validateReview(data?.review,current);
       if (data.environment !== 'test' || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
-          !review.checks_passed || !review.changes.length || review.kind !== 'campaign' || !review.target_id ||
+          !review.checks_passed || !review.changes.length || review.kind !== current.kind || !review.target_id ||
           typeof data.preserved_flags?.approved !== 'boolean' || typeof data.preserved_flags?.enabled !== 'boolean') throw Error('Invalid publishing summary');
       showReview(review,true);
       const flags = data.preserved_flags;
       $('draft-review').append(node('p','Values preserved: Approved: ' + display('approved',flags.approved) + ' \u00b7 Enabled: ' + display('enabled',flags.enabled)));
-      const publish = node('button','Publish campaign settings','primary'); publish.type = 'button';
+      const publish = node('button','Publish ' + current.kind + ' settings','primary'); publish.type = 'button';
       publish.onclick = () => campaignPublish(data.confirmation,ticket); $('draft-review').append(publish);
-      $('draft-status').textContent = 'Check the exact changes and warnings above, then choose Publish campaign settings to confirm.';
+      $('draft-status').textContent = 'Check the exact changes and warnings above, then choose Publish ' + current.kind + ' settings to confirm.';
     } else {
       if (data?.environment !== 'test' || data.draft_id !== current.id || data.revision !== current.revision ||
           data.target_id !== current.target_id || data.settings_published !== true || typeof data.history_id !== 'string' ||
           !/^[0-9a-f]{64}$/.test(data.history_id) || !Number.isFinite(Date.parse(data.published_at))) throw Error('Invalid publication receipt');
       await load();
-      if (user?.uid === uid) notice('Campaign settings published in the test project. Approval and enabled values were preserved.');
+      if (user?.uid === uid) notice((current.kind === 'creative' ? 'Creative' : 'Campaign') + ' settings published in the test project. Approval and enabled values were preserved.');
     }
   } catch (error) {
     if (!active()) return;
@@ -857,7 +861,7 @@ async function campaignPublish(confirmation = null, preparedTicket = null) {
     }
     $('draft-status').textContent = error?.code?.includes('aborted') ?
       'The draft or stored catalog changed. Review again and prepare a new publishing summary.' :
-      confirmation ? 'Publication could not be confirmed. Refresh the library and review the current campaign before trying again; the request may have completed.' :
+      confirmation ? 'Publication could not be confirmed. Refresh the library and review the current record before trying again; the request may have completed.' :
       'A publishing summary could not be prepared. Review the saved draft and correct any blocking issues, then try again.';
   } finally {
     if (generation === run && user?.uid === uid && editor === current) { mediaLock(false); $('review-draft').disabled = false; }
