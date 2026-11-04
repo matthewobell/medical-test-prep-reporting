@@ -16,6 +16,8 @@ const fetchReview = httpsCallable(getFunctions(app, config.region), 'review_ad_d
 const prepareCampaignPublish = httpsCallable(getFunctions(app, config.region), 'prepare_campaign_publish');
 const publishCampaignDraft = httpsCallable(getFunctions(app, config.region), 'publish_campaign_draft');
 const requestCampaignPause = httpsCallable(getFunctions(app, config.region), 'pause_campaign');
+const requestCampaignRollback = httpsCallable(getFunctions(app, config.region), 'campaign_rollback');
+let rollbackRequest = 0, rollbackBusyTicket = null, rollbackPanel = null;
 let campaignPauseBusy = false, pauseRequest = 0;
 let reviewRequest = 0;
 const prepareUpload = httpsCallable(getFunctions(app, config.region), 'prepare_ad_upload');
@@ -53,6 +55,7 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  ++rollbackRequest; rollbackBusyTicket = null; rollbackPanel = null;
   campaignPauseBusy = false; ++pauseRequest;
   invalidateReview();
   clearMediaPreview();
@@ -159,6 +162,7 @@ function display(key, value) {
   return String(value);
 }
 function detail(row) {
+  ++rollbackRequest; rollbackPanel = null;
   $('details').replaceChildren(node('h2', row.name || row.id,'workspace-title'));
   const groups = section === 'campaigns' ? [
     ['Overview',['name','sponsor_id','approved','enabled']],
@@ -223,6 +227,16 @@ function detail(row) {
     };
     related.append(button); $('details').append(related);
   }
+  if (section === 'campaigns') {
+    const restore = node('button','Restore previous settings','related'); restore.type = 'button';
+    restore.onclick = () => {
+      if (rollbackBusyTicket !== null || !user || !catalog || editor) return;
+      const panel = node('section',undefined,'note'); panel.style.marginTop = '24px'; panel.setAttribute('aria-label','Campaign restoration');
+      if (rollbackPanel) rollbackPanel.remove(); rollbackPanel = panel; $('details').append(panel);
+      rollbackCampaign(row,panel,'list');
+    };
+    $('details').append(restore);
+  }
   if (section === 'campaigns' && row.enabled === true) {
     const pause = node('button','Pause campaign','related'); pause.type = 'button';
     pause.onclick = () => pauseCampaign(row,pause); $('details').append(pause);
@@ -263,6 +277,65 @@ async function pauseCampaign(row,button) {
   } finally {
     button.disabled = false;
     if (pauseRequest === ticket) campaignPauseBusy = false;
+  }
+}
+async function rollbackCampaign(row,panel,action,historyId = null,confirmation = null,preparedTicket = null) {
+  if (!user || !catalog || editor || rollbackBusyTicket !== null || (preparedTicket !== null && preparedTicket !== rollbackRequest)) return;
+  const run = generation, uid = user.uid, currentCatalog = catalog, ticket = ++rollbackRequest;
+  const active = () => generation === run && user?.uid === uid && catalog === currentCatalog && !editor &&
+    section === 'campaigns' && selected === row.id && ticket === rollbackRequest && rollbackPanel === panel;
+  rollbackBusyTicket = ticket;
+  panel.replaceChildren(node('p',action === 'list' ? 'Loading previous settings changes...' : action === 'prepare' ? 'Checking the proposed restoration...' : 'Restoring the confirmed campaign settings...'));
+  try {
+    const data = (await requestCampaignRollback({action,target_id:row.id,
+      ...(historyId ? {history_id:historyId} : {}),...(confirmation ? {confirmation} : {})})).data;
+    if (!active()) return;
+    if (data?.environment !== 'test' || data.target_id !== row.id) throw Error('Invalid restoration response');
+    if (action === 'list') {
+      if (!Array.isArray(data.entries) || data.entries.length > 100 || data.entries.some(entry =>
+          typeof entry.id !== 'string' || !entry.id || entry.id.length > 200 || entry.id.includes('/') ||
+          !['publish','rollback'].includes(entry.action) || !Number.isFinite(Date.parse(entry.performed_at)) ||
+          !Array.isArray(entry.fields) || entry.fields.some(key => !fields.campaigns.includes(key) || ['approved','enabled'].includes(key)))) throw Error('Invalid campaign history');
+      panel.replaceChildren(node('h3','Restore previous settings'),node('p','Choose a history entry to restore all editable settings to how they were immediately before that change. You will review the exact restoration first. Approval and Enabled will stay as they are.'));
+      if (!data.entries.length) panel.append(node('p','No previous settings changes are available for this campaign.'));
+      for (const entry of data.entries) {
+        const item = node('div'); item.style.marginTop = '14px';
+        item.append(node('p','Before ' + (entry.action === 'publish' ? 'publication' : 'restoration') + ' on ' + localTime(entry.performed_at) + '. Changed: ' + entry.fields.map(key => labels[key]).join(', ')));
+        const choose = node('button','Review this restoration'); choose.type = 'button';
+        choose.onclick = () => rollbackCampaign(row,panel,'prepare',entry.id); item.append(choose); panel.append(item);
+      }
+    } else if (action === 'prepare') {
+      const review = validateReview(data.review,{id:'rollback-' + historyId,revision:1,kind:'campaign',target_id:row.id});
+      if (data.source_history_id !== historyId || !review.checks_passed || !review.changes.length ||
+          !/^[0-9a-f]{64}$/.test(data.confirmation || '') || typeof data.preserved_flags?.approved !== 'boolean' ||
+          typeof data.preserved_flags?.enabled !== 'boolean') throw Error('Invalid restoration summary');
+      panel.replaceChildren(node('h3','Review restoration'),node('p','This will restore the settings listed below. It will not change Approval or Enabled. If the campaign is enabled and approved, restored settings can affect new ad selections.'));
+      const list = node('dl');
+      for (const change of review.changes) detailField(list,labels[change.field],
+        'Current: ' + reviewValue(change.field,change.before) + '\nRestore: ' + reviewValue(change.field,change.after),['share_schedule','creative_overrides'].includes(change.field));
+      panel.append(list);
+      for (const issue of review.issues) panel.append(node('p','Warning: ' + issue.message));
+      panel.append(node('p','Values preserved: Approved: ' + display('approved',data.preserved_flags.approved) + ' | Enabled: ' + display('enabled',data.preserved_flags.enabled)));
+      const restore = node('button','Confirm restoration','primary'); restore.type = 'button';
+      restore.onclick = () => rollbackCampaign(row,panel,'rollback',historyId,data.confirmation,ticket); panel.append(restore);
+    } else {
+      if (data.source_history_id !== historyId || data.settings_restored !== true || !/^[0-9a-f]{64}$/.test(data.history_id || '') ||
+          !Number.isFinite(Date.parse(data.rolled_back_at))) throw Error('Invalid restoration receipt');
+      await load();
+      if (user?.uid === uid) notice('Previous campaign settings restored in the test project. Approval and Enabled stayed unchanged.');
+    }
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff restoration access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    panel.replaceChildren(node('p',error?.code?.includes('aborted') ?
+      'The campaign, history, or bookings changed. Refresh the library and prepare a new restoration summary.' : action === 'rollback' ?
+      'Restoration could not be confirmed. Refresh the library before trying again; the request may have completed.' :
+      action === 'list' ? 'Campaign history could not be loaded. Refresh the library and try again.' :
+      'Previous settings could not be prepared. They may already match the campaign or conflict with current bookings. Refresh the library and try again.'));
+  } finally {
+    if (rollbackBusyTicket === ticket) rollbackBusyTicket = null;
   }
 }
 function updateCampaigns() {
@@ -806,7 +879,7 @@ $('tab-drafts').onclick = () => switchSection('drafts');
 $('reload-draft').onclick = () => {
   if (editor?.id && !draftBusy && (!dirty || window.confirm('Discard your unsaved changes and load the latest saved version?'))) readDraft(editor.id,$('reload-draft'));
 };
-window.addEventListener('beforeunload',event => { if (dirty || draftBusy || campaignPauseBusy) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload',event => { if (dirty || draftBusy || campaignPauseBusy || rollbackBusyTicket !== null) { event.preventDefault(); event.returnValue = ''; } });
 $('draft-form').onsubmit = async event => {
   event.preventDefault(); if (!editor || !user || draftBusy) return;
   const run = generation, uid = user.uid, current = editor;
@@ -881,7 +954,7 @@ $('email-form').onsubmit = async event => {
 };
 $('email-retry').onclick = resetLink;
 $('sign-out').onclick = async () => {
-  if ((dirty || draftBusy || campaignPauseBusy) && !window.confirm('Leave this editor and sign out? Any unsaved changes will be discarded. A save, publication, or pause already sent may still finish.')) return;
+  if ((dirty || draftBusy || campaignPauseBusy || rollbackBusyTicket !== null) && !window.confirm('Leave this editor and sign out? Any unsaved changes will be discarded. A save, publication, pause, or restoration already sent may still finish.')) return;
   ++generation; clearLibrary(); resetLink(); $('email').value = '';
   try { await signOut(auth); } catch { notice('Sign-out could not finish. Close this tab to end this session.',true); }
 };
