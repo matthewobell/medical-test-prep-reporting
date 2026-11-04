@@ -621,6 +621,30 @@ function disclosure(title,subtitle,count) {
   heading.append(node('strong',title),node('span',subtitle,'field-help'));
   summary.append(heading,node('span',count,'disclosure-count')); box.append(summary); return box;
 }
+function adPreviewScreen() {
+  const screen = node('div',undefined,'phone-screen ad-preview-screen');
+  const ad = node('div',undefined,'ad-preview');
+  ad.append(node('span','5','ad-preview-counter'));
+  for (const [field,tag] of [['eyebrow_text','p'],['headline','h3']]) {
+    const text = node(tag,undefined,'ad-preview-' + field); text.dataset.adCopy = field; ad.append(text);
+  }
+  const media = node('div',undefined,'ad-preview-media');
+  media.setAttribute('aria-label','Saved creative media');
+  ad.append(media);
+  for (const field of ['body_text','cta_text','disclaimer_text']) {
+    const text = node('p',undefined,'ad-preview-' + field); text.dataset.adCopy = field; ad.append(text);
+  }
+  screen.append(ad); return {screen,media};
+}
+function syncAdPreview() {
+  if (editor?.kind !== 'creative') return;
+  const copy = editorRead();
+  for (const text of document.querySelectorAll('[data-ad-copy]')) {
+    const value = copy[text.dataset.adCopy] || '';
+    text.textContent = value + (value && text.dataset.adCopy === 'cta_text' ? ' \u2192' : '');
+    text.hidden = !value.trim();
+  }
+}
 function uploadControls() {
   const box = disclosure('Private draft media','Image, video and video cover','3 uploads');
   box.append(node('p',editor.id ? 'Upload a file, then save the draft to attach it. Existing uploaded files are kept; replacing an attachment does not delete files.' :
@@ -640,21 +664,21 @@ function uploadControls() {
     const status = node('p',editor.fields.media_assets[slot] ? 'A private file is attached to this draft.' : 'No private file attached.','muted'); status.setAttribute('role','status');
     const progress = node('progress'); progress.max = 100; progress.value = 0; progress.hidden = true; progress.setAttribute('aria-label',title + ' upload progress');
     const preview = node('button','Preview saved file','secondary'); preview.type = 'button'; preview.hidden = !editor.fields.media_assets[slot];
-    const player = node('div',undefined,'phone-screen');
-    const phone = node('div',undefined,'phone-frame'); phone.append(player);
+    const {screen,media:player} = adPreviewScreen();
+    const phone = node('div',undefined,'phone-frame ad-preview-frame'); phone.append(screen);
     const controls = node('div',undefined,'upload-controls'), devices = node('div',undefined,'media-tabs');
     const deviceButtons = [];
     for (const device of ['iPhone','Android']) {
       const button = node('button',device); button.type = 'button'; button.setAttribute('aria-pressed',String(device === 'iPhone'));
-      button.onclick = () => { phone.className = 'phone-frame' + (device === 'Android' ? ' android' : ''); deviceButtons.forEach(other => other.setAttribute('aria-pressed',String(other === button))); };
+      button.onclick = () => { phone.className = 'phone-frame ad-preview-frame' + (device === 'Android' ? ' android' : ''); deviceButtons.forEach(other => other.setAttribute('aria-pressed',String(other === button))); };
       deviceButtons.push(button); devices.append(button);
     }
     file.onchange = () => uploadMedia(slot,file,status,progress);
     preview.onclick = () => previewMedia(slot,preview,status,player);
-    controls.append(label,file,help,status,progress,preview,node('p','Preview frame','field-help'),devices,node('p','Browser preview of the saved file. Native app layout may differ.','field-help'));
+    controls.append(label,file,help,status,progress,preview,node('p','Preview frame','field-help'),devices,node('p','Draft text with saved media. The button is inactive and the 5 is a static sample. Native app layout may differ.','field-help'));
     wrap.append(controls,phone); zone.append(wrap);
   }
-  box.append(zone); $('editor-fields').append(box);
+  box.append(zone); $('editor-fields').append(box); syncAdPreview();
 }
 function mediaLock(busy) {
   draftBusy = busy; $('draft-fields').disabled = busy; $('save-draft').disabled = busy; $('close-draft').disabled = busy;
@@ -724,8 +748,8 @@ async function previewMedia(slot,button,status,player) {
     // Keep only one local preview URL alive at a time.
     for (const element of document.querySelectorAll('[data-draft-preview]')) element.remove();
     const element = node(slot === 'video' ? 'video' : 'img'); element.src = previewUrl;
-    element.dataset.draftPreview = ''; element.style.maxWidth = '100%'; element.style.maxHeight = '400px';
-    if (slot === 'video') { element.controls = true; element.muted = true; } else element.alt = 'Private creative preview';
+    element.dataset.draftPreview = '';
+    if (slot === 'video') { element.controls = true; element.muted = true; element.playsInline = true; } else element.alt = 'Private creative preview';
     player.replaceChildren(element); status.textContent = 'Private preview loaded. This does not serve an ad or record an impression.';
   } catch {
     if (active()) status.textContent = 'Preview could not load. Check your connection and staff access, then try again.';
@@ -870,7 +894,7 @@ function leaveEditor() {
   editor = null; editorRead = null; dirty = false; ++draftRequest;
   $('editor-fields').replaceChildren(); $('draft-editor').hidden = true; $('browse-panel').hidden = false; render(); return true;
 }
-$('draft-form').oninput = () => { dirty = true; invalidateReview(); };
+$('draft-form').oninput = () => { dirty = true; invalidateReview(); syncAdPreview(); };
 $('draft-form').onchange = () => { dirty = true; invalidateReview(); };
 $('close-draft').onclick = leaveEditor;
 $('new-campaign').onclick = () => openEditor({kind:'campaign',target_id:null,fields:{}});
