@@ -188,6 +188,32 @@ button:disabled{cursor:not-allowed;opacity:.55}
 
 .shell:has(>aside[hidden]){grid-template-columns:1fr}
 .content{min-width:0}header{flex-direction:row;align-items:center}.stats .stat strong{color:#182b47}.stat span{color:#71829a}
+
+/* Ensure the publishing summary stays legible on the light editor surface. */
+#draft-review{background:#f7f9fc;color:#182b47;border:1px solid #d6e0ed;padding:22px;border-radius:12px}
+#draft-review h2,#draft-review h3{color:#182b47}
+#draft-review dt{color:#536985;font-weight:600;margin-top:16px}
+#draft-review dd{color:#253b59;white-space:pre-wrap;line-height:1.6}
+#draft-review .muted{color:#71819a}
+#draft-review button{margin-top:18px}
+
+/* Full-ad preview: the device switches change the frame, not delivery. */
+.phone-frame.ad-preview-frame{max-width:330px;aspect-ratio:auto;padding:8px;background:#0b1426;border-radius:43px}
+.ad-preview-frame.android{border-radius:30px}
+.ad-preview-frame:before{z-index:1;top:10px}
+.phone-screen.ad-preview-screen{container-type:inline-size;display:block;height:auto;aspect-ratio:585/1237;border-radius:29px;background:#1b2942;overflow:auto;scrollbar-width:thin}
+.android .ad-preview-screen{border-radius:17px}
+.ad-preview{position:relative;min-height:100%;padding:43.6cqw 0 8cqw;text-align:center;color:white}
+.ad-preview p,.ad-preview h3{overflow-wrap:anywhere;color:white;margin:0;white-space:pre-line}
+.ad-preview-counter{position:absolute;top:4.27cqw;right:4.27cqw;width:8.55cqw;height:8.55cqw;border-radius:.85cqw;background:#2e4268;display:flex;align-items:center;justify-content:center;font-size:3.42cqw;font-weight:700}
+.ad-preview .ad-preview-eyebrow_text{font-size:3.42cqw;line-height:1.2;margin:0 6.15cqw 1.8cqw;font-weight:550}
+.ad-preview .ad-preview-headline{font-size:7.7cqw;line-height:1.15;letter-spacing:-.2cqw;margin:0 6.15cqw;font-weight:600}
+.ad-preview-media{margin:8cqw 6.15cqw 0;height:68.4cqw;border-radius:4.1cqw;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.ad-preview-media:empty:before{content:'No saved preview loaded';font-size:3.4cqw;color:#a9bad2}
+.phone-screen .ad-preview-media img,.phone-screen .ad-preview-media video{display:block;width:auto;height:auto;max-width:100%;max-height:100%!important;object-fit:contain;flex:0 1 auto;min-width:0;min-height:0;border-radius:4.1cqw;clip-path:inset(0 round 4.1cqw);overflow:hidden}
+.ad-preview .ad-preview-body_text{font-size:3.42cqw;line-height:1.2;font-weight:500;margin:5.8cqw 8cqw 0}
+.ad-preview .ad-preview-cta_text{display:flex;align-items:center;justify-content:center;width:67.5cqw;min-height:12.3cqw;margin:8.6cqw auto 0;padding:2cqw 4cqw;border-radius:7cqw;background:#c6c9cf;color:#1b2942;font-size:3.42cqw;font-weight:650;line-height:1.3}
+.ad-preview .ad-preview-disclaimer_text{font-size:2.35cqw;line-height:1.35;color:#a9bad2;margin:3cqw 6.15cqw 0}
 </style></head><body>
 <aside id="notice" role="status" aria-live="polite" hidden></aside>
 <div class="shell"><aside id="workspace-navigation" hidden><div class="workspace-logo">Medical Test Prep<small>Advertiser workspace</small></div><nav aria-label="Workspace"><button id="tab-campaigns" aria-pressed="false">Campaigns</button><button id="tab-creatives" aria-pressed="false">Ad creatives</button><button id="tab-drafts" aria-pressed="false">Drafts</button><button disabled title="Media library is not available yet">Media library</button><a href="./staff-reporting.html">Reports</a></nav><nav aria-label="Account"><button id="tab-sponsors" aria-pressed="false">Sponsors</button><button id="new-sponsor" disabled title="Sponsor creation is not available yet">New sponsor</button></nav><p class="aside-foot">Admin and ads-team access only</p></aside><div class="content page"><header><div class="workspace-logo">Medical Test Prep</div><div id="library-filters" hidden><label class="visually-hidden" for="sponsor-filter">Sponsor</label><select id="sponsor-filter"><option value="all">All sponsors</option></select></div><p id="account" class="account">Admin and ads-team access only</p><button id="sign-out" class="secondary" hidden>Log Out</button></header>
@@ -195,4 +221,4 @@ button:disabled{cursor:not-allowed;opacity:.55}
 <section id="loading" class="panel" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><h2>Loading your campaign library</h2><p class="muted">Checking staff access and retrieving the test catalog.</p></section>
 <section id="library" hidden><div id="browse-panel"><div class="intro"><div><h1 id="browse-title">Campaigns</h1><p id="browse-description" class="muted">Manage campaigns and the ads within them.</p></div><div class="actions"><button id="new-campaign" class="primary">+ Create campaign</button><button id="new-creative">+ Create ad</button></div></div><div class="stats"><div class="stat"><span>Campaigns</span><strong id="campaign-count">0</strong></div><div class="stat"><span>Ad creatives</span><strong id="creative-count">0</strong></div><div class="stat"><span>Saved drafts</span><strong id="draft-count">0</strong></div></div><section class="card" aria-label="Library records"><div class="toolbar"><form id="search-form" role="search"><input id="library-search" type="search" aria-label="Search library records" maxlength="200" placeholder="Search campaigns or sponsors"><button type="submit">Search</button></form><select id="campaign-filter" aria-label="Campaign"><option value="all">All campaigns</option></select><select id="record-status" aria-label="Filter status"><option value="all">All statuses</option><option value="approved">Approved</option><option value="unapproved">Not approved</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></div><div class="table-wrap" tabindex="0" aria-label="Record table; scroll for more results"><table><thead id="record-head"></thead><tbody id="records"></tbody></table></div><p id="summary" class="table-foot" role="status" aria-live="polite"></p></section><section id="details" class="card marketplace-details" aria-label="Selected record details"></section><div class="library-footer"><button id="refresh" class="secondary">Refresh library</button><p id="fetched" class="read-time"></p></div></div><section id="draft-editor" class="panel" hidden aria-labelledby="editor-title"><h2 id="editor-title"></h2><p class="muted">Draft only. Save unfinished work here without changing served ads. Dates use your browser’s local time zone and are stored in UTC.</p><p id="draft-metadata" class="muted"></p><form id="draft-form"><fieldset id="draft-fields"><legend class="muted">Draft configuration</legend><div id="editor-fields" class="editor-grid"></div></fieldset><p id="draft-status" role="status" aria-live="polite"></p><div class="actions"><button id="save-draft" type="submit">Save draft</button><button id="review-draft" type="button" class="secondary">Review saved draft</button><button id="close-draft" type="button" class="secondary">Back to library</button><button id="reload-draft" type="button" class="secondary" hidden>Reload saved version</button></div></form><section id="draft-review" class="banner" hidden aria-label="Saved draft review"></section></section></section>
 <noscript><p>Enable JavaScript to sign in and view the campaign library.</p></noscript></main></div></div>
-<script type="module" src="./admin-library.js?v=7"></script></body></html>
+<script type="module" src="./admin-library.js?v=9"></script></body></html>
