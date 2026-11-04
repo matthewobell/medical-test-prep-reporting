@@ -227,7 +227,7 @@ function detail(row) {
     const pause = node('button','Pause campaign','related'); pause.type = 'button';
     pause.onclick = () => pauseCampaign(row,pause); $('details').append(pause);
   }
-  if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaignâ€™s exposure share.','muted'));
+  if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign\u2019s exposure share.','muted'));
 }
 async function pauseCampaign(row,button) {
   if (!user || !catalog || editor || campaignPauseBusy || row.enabled !== true) return;
@@ -242,7 +242,7 @@ async function pauseCampaign(row,button) {
     if (summary?.environment !== 'test' || summary.target_id !== row.id || summary.enabled !== true ||
         typeof summary.name !== 'string' || !summary.name || summary.name.length > 200 ||
         !/^[0-9a-f]{64}$/.test(summary.confirmation || '')) throw Error('Invalid pause summary');
-    if (!window.confirm('Pause â€œ' + summary.name + 'â€?\n\nThis stops new ad selections for this campaign. Ads already displayed may finish. Approval, dates, targeting, and exposure share stay unchanged.')) return;
+    if (!window.confirm('Pause \u201c' + summary.name + '\u201d?\n\nThis stops new ad selections for this campaign. Ads already displayed may finish. Approval, dates, targeting, and exposure share stay unchanged.')) return;
     if (!active()) return;
     sent = true;
     const receipt = (await requestCampaignPause({action:'pause',target_id:row.id,confirmation:summary.confirmation})).data;
@@ -321,7 +321,7 @@ function render() {
   const currentRow = chooseRow(rows);
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed',String(section === type));
   $('campaign-filter').disabled = section === 'sponsors';
-  $('summary').textContent = rows.length + ' ' + section + ' Â· ' + catalog.sponsors.length + ' sponsors, ' + catalog.campaigns.length + ' campaigns, ' + catalog.creatives.length + ' creatives in this test catalog';
+  $('summary').textContent = rows.length + ' ' + section + ' \u00b7 ' + catalog.sponsors.length + ' sponsors, ' + catalog.campaigns.length + ' campaigns, ' + catalog.creatives.length + ' creatives in this test catalog';
   renderTable(rows);
   if (currentRow) detail(currentRow); else $('details').replaceChildren(node('p','No records match these filters.','empty'));
 }
@@ -340,7 +340,7 @@ async function load() {
     restoreSelection(); updateCampaigns(); render();
     $('library-filters').hidden = false; $('workspace-navigation').hidden = false;
     $('library').hidden = false; $('loading').hidden = true;
-    $('fetched').textContent = 'Fetched ' + localTime(catalog.fetched_at) + ' (local time). Schedule times use your browserâ€™s local time zone.';
+    $('fetched').textContent = 'Fetched ' + localTime(catalog.fetched_at) + ' (local time). Schedule times use your browser\u2019s local time zone.';
   } catch (error) {
     if (run !== generation || user?.uid !== uid) return;
     clearLibrary();
@@ -374,13 +374,13 @@ function validateDraftList(data) {
   return data.drafts;
 }
 function draftMetadata(draft) {
-  return draft.id ? 'Saved ' + localTime(draft.updated_at) + ' Â· Staff ID: ' + draft.updated_by + ' Â· Revision ' + draft.revision + ' Â· Draft ID: ' + draft.id : 'Not saved yet';
+  return draft.id ? 'Saved ' + localTime(draft.updated_at) + ' \u00b7 Staff ID: ' + draft.updated_by + ' \u00b7 Revision ' + draft.revision + ' \u00b7 Draft ID: ' + draft.id : 'Not saved yet';
 }
 function renderDrafts() {
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed','false');
   $('campaign-filter').disabled = true;
   const rows = drafts.filter(matchesSearch), currentDraft = chooseRow(rows);
-  $('summary').textContent = rows.length + ' drafts Â· Drafts are shown separately from catalog filters and do not serve ads.';
+  $('summary').textContent = rows.length + ' drafts \u00b7 Drafts are shown separately from catalog filters and do not serve ads.';
   renderTable(rows); $('details').replaceChildren();
   const draft = currentDraft;
   if (!draft) { $('details').append(node('p','No drafts match this search.','empty')); return; }
@@ -473,7 +473,7 @@ function editField(parent, key, value, choices = null) {
 }
 function editList(parent, key, values) {
   const box = node('fieldset',undefined,'wide'); box.append(node('legend',labels[key]));
-  box.append(node('p',key === 'share_schedule' ? 'Shares describe this campaignâ€™s intended exposure over each period. Full booking and overlap checks happen before publishing.' :
+  box.append(node('p',key === 'share_schedule' ? 'Shares describe this campaign\u2019s intended exposure over each period. Full booking and overlap checks happen before publishing.' :
     'Choose existing creatives for a placement, exam, or module. Leave unfinished settings blank to complete later.','field-help'));
   const list = node('div',undefined,'draft-list'), rows = [], maximum = key === 'share_schedule' ? 100 : 200;
   const add = node('button',key === 'share_schedule' ? 'Add share period' : 'Add creative override','secondary'); add.type = 'button';
@@ -502,7 +502,7 @@ function openEditor(draft) {
   $('draft-editor').hidden = false; $('browse-panel').hidden = true; $('reload-draft').hidden = true;
   $('draft-status').textContent = '';
   $('editor-title').textContent = (draft.kind === 'campaign' ? 'Campaign' : 'Creative') + ' draft';
-  $('draft-metadata').textContent = draftMetadata(draft) + (draft.target_id ? ' Â· Based on record: ' + draft.target_id : ' Â· New record');
+  $('draft-metadata').textContent = draftMetadata(draft) + (draft.target_id ? ' \u00b7 Based on record: ' + draft.target_id : ' \u00b7 New record');
   $('editor-fields').replaceChildren();
   const type = draft.kind === 'campaign' ? 'campaigns' : 'creatives', readers = [];
   const root = $('editor-fields');
@@ -563,7 +563,7 @@ function uploadControls() {
     const label = node('label',title); label.htmlFor = id;
     const file = node('input'); file.id = id; file.type = 'file'; file.accept = slot === 'video' ? 'video/mp4' : 'image/jpeg,image/png,image/webp';
     file.disabled = !editor.id;
-    const help = node('p',slot === 'video' ? 'MP4 Â· up to 50 MB' : 'JPEG, PNG, WebP Â· up to 10 MB','field-help');
+    const help = node('p',slot === 'video' ? 'MP4 \u00b7 up to 50 MB' : 'JPEG, PNG, WebP \u00b7 up to 10 MB','field-help');
     const status = node('p',editor.fields.media_assets[slot] ? 'A private file is attached to this draft.' : 'No private file attached.','muted'); status.setAttribute('role','status');
     const progress = node('progress'); progress.max = 100; progress.value = 0; progress.hidden = true; progress.setAttribute('aria-label',title + ' upload progress');
     const preview = node('button','Preview saved file','secondary'); preview.type = 'button'; preview.hidden = !editor.fields.media_assets[slot];
@@ -596,13 +596,13 @@ async function uploadMedia(slot,input,status,progress) {
   }
   const current = editor, run = generation, uid = user.uid;
   const active = () => editor === current && generation === run && user?.uid === uid;
-  mediaLock(true); status.textContent = 'Preparing private uploadâ€¦'; progress.hidden = false; progress.value = 0;
+  mediaLock(true); status.textContent = 'Preparing private upload\u2026'; progress.hidden = false; progress.value = 0;
   try {
     const prepared = await prepareUpload({draft_id:current.id,slot,name:file.name,size:file.size,content_type:file.type});
     if (!active()) return;
     const data = prepared.data, url = new URL(data.upload_url);
     if (data.environment !== 'test' || !data.asset?.id || data.asset.slot !== slot || url.protocol !== 'https:' || url.hostname !== 'storage.googleapis.com' || url.username || url.password) throw Error('Invalid upload response');
-    status.textContent = 'Uploading ' + file.name + 'â€¦';
+    status.textContent = 'Uploading ' + file.name + '\u2026';
     await new Promise((resolve,reject) => {
       const request = new XMLHttpRequest(); uploadTask = request;
       request.open('PUT',url.href); request.setRequestHeader('Content-Type',file.type); request.timeout = 20 * 60 * 1000;
@@ -612,7 +612,7 @@ async function uploadMedia(slot,input,status,progress) {
       request.send(file);
     });
     uploadTask = null; if (!active()) return;
-    status.textContent = 'Checking uploaded fileâ€¦';
+    status.textContent = 'Checking uploaded file\u2026';
     const completed = await completeUpload({asset_id:data.asset.id});
     if (!active()) return;
     const result = completed.data;
@@ -635,7 +635,7 @@ async function previewMedia(slot,button,status,player) {
   if (dirty) { status.textContent = 'Save the draft before previewing its attached media.'; return; }
   const current = editor, run = generation, uid = user.uid;
   const active = () => editor === current && generation === run && user?.uid === uid;
-  mediaLock(true); status.textContent = 'Checking access and loading private previewâ€¦';
+  mediaLock(true); status.textContent = 'Checking access and loading private preview\u2026';
   try {
     const [token, attestation] = await Promise.all([user.getIdToken(), getToken(appCheck)]);
     if (!active()) return;
@@ -693,14 +693,14 @@ function reviewValue(key, value) {
     if (!value.length) return 'None';
     return value.map((entry,index) => key === 'share_schedule' ?
       'Period ' + (index+1) + ': ' + (entry.percent ?? 'Not set') + '%\n' + display('start_at',entry.start_at) + '\nUntil: ' + display('end_at',entry.end_at) :
-      'Override ' + (index+1) + ': ' + (entry.placement || 'Not set') + ' Â· Exam: ' + (entry.exam || 'All') + ' Â· Module: ' + (entry.module || 'All') + '\nCreatives: ' + (entry.creative_ids || []).map(id => name('creatives',id)).join(', ')).join('\n\n');
+      'Override ' + (index+1) + ': ' + (entry.placement || 'Not set') + ' \u00b7 Exam: ' + (entry.exam || 'All') + ' \u00b7 Module: ' + (entry.module || 'All') + '\nCreatives: ' + (entry.creative_ids || []).map(id => name('creatives',id)).join(', ')).join('\n\n');
   }
   return display(key,value);
 }
 function showReview(data, finalSummary = false) {
   const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
   const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
-  box.append(heading,node('p','Saved revision ' + data.revision + ' Â· Draft ID: ' + data.draft_id + ' Â· Reviewed ' + localTime(data.reviewed_at),'muted'),
+  box.append(heading,node('p','Saved revision ' + data.revision + ' \u00b7 Draft ID: ' + data.draft_id + ' \u00b7 Reviewed ' + localTime(data.reviewed_at),'muted'),
     node('p',finalSummary ? 'Final publishing summary. Confirm below to update campaign settings used for ad delivery in the test project.' : 'Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
   for (const severity of ['error','warning']) {
     const items = data.issues.filter(issue => issue.severity === severity);
@@ -728,7 +728,7 @@ async function campaignPublish(confirmation = null, preparedTicket = null) {
   const current = editor, run = generation, uid = user.uid, ticket = reviewRequest;
   const active = () => editor === current && generation === run && user?.uid === uid && ticket === reviewRequest;
   mediaLock(true); $('review-draft').disabled = true;
-  $('draft-status').textContent = confirmation ? 'Publishing the confirmed campaign settingsâ€¦' : 'Preparing the final publishing summaryâ€¦';
+  $('draft-status').textContent = confirmation ? 'Publishing the confirmed campaign settings\u2026' : 'Preparing the final publishing summary\u2026';
   try {
     const response = confirmation ? await publishCampaignDraft({draft_id:current.id,expected_revision:current.revision,confirmation}) :
       await prepareCampaignPublish({draft_id:current.id,expected_revision:current.revision});
@@ -741,7 +741,7 @@ async function campaignPublish(confirmation = null, preparedTicket = null) {
           typeof data.preserved_flags?.approved !== 'boolean' || typeof data.preserved_flags?.enabled !== 'boolean') throw Error('Invalid publishing summary');
       showReview(review,true);
       const flags = data.preserved_flags;
-      $('draft-review').append(node('p','Values preserved: Approved: ' + display('approved',flags.approved) + ' Â· Enabled: ' + display('enabled',flags.enabled)));
+      $('draft-review').append(node('p','Values preserved: Approved: ' + display('approved',flags.approved) + ' \u00b7 Enabled: ' + display('enabled',flags.enabled)));
       const publish = node('button','Publish campaign settings','primary'); publish.type = 'button';
       publish.onclick = () => campaignPublish(data.confirmation,ticket); $('draft-review').append(publish);
       $('draft-status').textContent = 'Check the exact changes and warnings above, then choose Publish campaign settings to confirm.';
@@ -772,7 +772,7 @@ $('review-draft').onclick = async () => {
   if (!editor.id || dirty) { $('draft-status').textContent = 'Save your draft changes before reviewing the saved revision.'; return; }
   const current = editor, run = generation, uid = user.uid, ticket = reviewRequest;
   const active = () => editor === current && generation === run && user?.uid === uid && ticket === reviewRequest;
-  mediaLock(true); $('review-draft').disabled = true; $('draft-status').textContent = 'Reviewing the saved draft and stored configurationâ€¦';
+  mediaLock(true); $('review-draft').disabled = true; $('draft-status').textContent = 'Reviewing the saved draft and stored configuration\u2026';
   try {
     const response = await fetchReview({draft_id:current.id,expected_revision:current.revision});
     if (!active()) return;
@@ -815,7 +815,7 @@ $('draft-form').onsubmit = async event => {
   catch { $('draft-status').textContent = 'Check the dates and field values before saving.'; return; }
   invalidateReview();
   draftBusy = true; $('draft-fields').disabled = true; $('save-draft').disabled = true; $('close-draft').disabled = true;
-  $('reload-draft').hidden = true; $('draft-status').textContent = 'Saving draftâ€¦';
+  $('reload-draft').hidden = true; $('draft-status').textContent = 'Saving draft\u2026';
   try {
     const response = await persistDraft({draft_id:current.id || null,expected_revision:current.revision || 0,
       kind:current.kind,target_id:current.target_id,fields:values});
