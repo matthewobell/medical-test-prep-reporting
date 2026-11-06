@@ -13,6 +13,8 @@ let user = null, catalog = null, generation = 0, appCheck, timer, ready = false,
 const fetchDrafts = httpsCallable(getFunctions(app, config.region), 'get_ad_drafts');
 const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_draft');
 const fetchReview = httpsCallable(getFunctions(app, config.region), 'review_ad_draft');
+const requestCreativeApproval = httpsCallable(getFunctions(app, config.region), 'approve_creative');
+let approvalRequest = 0, approvalBusyTicket = null, approvalPanel = null;
 const requestCreativeCreate = httpsCallable(getFunctions(app, config.region), 'create_creative');
 const requestCampaignCreate = httpsCallable(getFunctions(app, config.region), 'create_campaign');
 const prepareCampaignPublish = httpsCallable(getFunctions(app, config.region), 'prepare_campaign_publish');
@@ -63,6 +65,7 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  ++approvalRequest; approvalBusyTicket = null; approvalPanel = null;
   ++resumeRequest; resumeBusyTicket = null; resumePanel = null;
   ++rollbackRequest; rollbackBusyTicket = null; rollbackPanel = null;
   campaignPauseBusy = false; ++pauseRequest;
@@ -171,6 +174,7 @@ function display(key, value) {
   return String(value);
 }
 function detail(row) {
+  ++approvalRequest; approvalPanel = null;
   ++resumeRequest; resumePanel = null;
   ++publishedPreviewRequest;
   ++rollbackRequest; rollbackPanel = null;
@@ -273,7 +277,92 @@ function detail(row) {
     };
     $('details').append(resume);
   }
+  if (section === 'creatives' && row.approved === false && row.enabled === false) {
+    const approve = node('button','Review creative approval','related'); approve.type = 'button';
+    approve.onclick = () => {
+      if (!user || !catalog || editor || approvalBusyTicket !== null) return;
+      if (approvalPanel) approvalPanel.remove();
+      approvalPanel = node('section',undefined,'note'); approvalPanel.setAttribute('aria-label','Creative approval review');
+      $('details').append(approvalPanel); approveCreative(row,approvalPanel);
+    };
+    $('details').append(approve);
+  }
   if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign\u2019s exposure share.','muted'));
+}
+async function approveCreative(row,panel,confirmation = null,preparedTicket = null,acknowledged = false) {
+  if (!user || !catalog || editor || approvalBusyTicket !== null ||
+      (confirmation && (!acknowledged || preparedTicket !== approvalRequest))) return;
+  const run = generation, uid = user.uid, currentCatalog = catalog, ticket = ++approvalRequest;
+  const active = () => generation === run && user?.uid === uid && catalog === currentCatalog && !editor &&
+    section === 'creatives' && selected === row.id && approvalPanel === panel && ticket === approvalRequest && panel.isConnected;
+  approvalBusyTicket = ticket;
+  const status = node('p',confirmation ? 'Saving the confirmed creative approval...' : 'Checking saved content and private media...');
+  status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); panel.replaceChildren(status);
+  try {
+    const data = (await requestCreativeApproval({action:confirmation ? 'approve' : 'prepare',target_id:row.id,
+      ...(confirmation ? {confirmation} : {})})).data;
+    if (!active()) return;
+    if (confirmation) {
+      if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
+          !/^[0-9a-f]{64}$/.test(data.history_id || '') || !/^[0-9a-f]{64}$/.test(data.content_digest || '') ||
+          !Number.isFinite(Date.parse(data.approved_at))) throw Error('Invalid approval receipt');
+      await load();
+      if (user?.uid === uid) notice('Creative approved in the test project. Enabled remains No. It will not serve until separately activated.');
+      return;
+    }
+    if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== false || data.enabled !== false ||
+        !/^[0-9a-f]{64}$/.test(data.confirmation || '') || !/^[0-9a-f]{64}$/.test(data.content_digest || '') ||
+        data.creative?.id !== row.id) throw Error('Invalid approval summary');
+    const creative = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),
+      sponsors:[],campaigns:[],creatives:[data.creative]}).creatives[0];
+    if (creative.approved !== false || creative.enabled !== false || !['image','video'].includes(creative.media_type)) throw Error('Invalid creative');
+    const slots = creative.media_type === 'image' ? {image:'image_url'} : {video:'video_url',poster:'video_poster_image_url'};
+    if (!data.media || Object.keys(data.media).length !== Object.keys(slots).length || !Array.isArray(data.warnings) ||
+        data.warnings.length > 500 || data.warnings.some(value => typeof value !== 'string' || value.length > 4000)) throw Error('Invalid media evidence');
+    for (const [slot,key] of Object.entries(slots)) {
+      const evidence = data.media[slot];
+      if (!evidence || !/^published\/[0-9a-f]{64}$/.test(evidence.path || '') ||
+          creative[key] !== 'https://storage.googleapis.com/medical-test-prep-ads-test-published-media/' + evidence.path ||
+          !/^[0-9]{1,30}$/.test(evidence.generation || '') || !Number.isSafeInteger(evidence.size) || evidence.size <= 0 ||
+          evidence.size > (slot === 'video' ? 50 : 10)*1024*1024 || !/^[A-Za-z0-9+/]{6}==$/.test(evidence.crc32c || '') ||
+          !(slot === 'video' ? ['video/mp4'] : ['image/png','image/jpeg','image/webp']).includes(evidence.content_type)) throw Error('Invalid private media');
+    }
+    panel.replaceChildren(node('h3','Review creative approval'),node('p',
+      'Approval changes from No to Yes. Enabled stays No. Review the saved content, destination, dates, platforms, and media before confirming. Nothing has been approved yet.'));
+    const list = node('dl');
+    for (const key of fields.creatives) detailField(list,labels[key],reviewValue(key,creative[key]));
+    panel.append(list);
+    if (data.warnings.length) {
+      panel.append(node('h4','Warnings'));
+      const warnings = node('ul'); for (const warning of data.warnings) warnings.append(node('li',warning)); panel.append(warnings);
+    }
+    for (const [slot,key] of Object.entries(slots)) {
+      const label = slot === 'poster' ? 'video cover' : slot;
+      panel.append(node('p','Private ' + label + ' version: ' + data.media[slot].generation,'muted'));
+      const preview = node('button','Preview saved ' + label); preview.type = 'button';
+      const previewStatus = node('p',undefined,'muted'); previewStatus.setAttribute('role','status');
+      const stage = node('div');
+      preview.onclick = () => publishedMediaPreview(creative,slot,preview,previewStatus,stage);
+      panel.append(preview,previewStatus,stage);
+    }
+    panel.append(node('p','Private file versions were checked. Image appearance and video playback require your review. Publishing edits will clear approval and disable this creative.','muted'));
+    const check = node('input'); check.type = 'checkbox';
+    const label = node('label'); label.append(check,document.createTextNode(' I reviewed this content, destination, and saved media and approve this version.'));
+    const confirm = node('button','Confirm creative approval'); confirm.type = 'button'; confirm.disabled = true;
+    check.onchange = () => { confirm.disabled = !check.checked; };
+    confirm.onclick = () => { if (check.checked) approveCreative(row,panel,data.confirmation,ticket,true); };
+    panel.append(label,confirm);
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff approval access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    panel.replaceChildren(node('p',confirmation ?
+      'Approval could not be confirmed. Refresh the library and check Approved before retrying; the request may have completed. Changed content or media requires a new review.' :
+      'Approval checks did not pass. This flow requires an unapproved, disabled creative with complete content, valid dates, and uploaded private media. Refresh the library and review the saved record.'));
+  } finally {
+    if (approvalBusyTicket === ticket) approvalBusyTicket = null;
+  }
 }
 async function resumeCampaign(row,panel,confirmation = null,preparedTicket = null) {
   if (!user || !catalog || editor || resumeBusyTicket !== null ||
@@ -1046,21 +1135,27 @@ async function campaignPublish(confirmation = null, preparedTicket = null) {
     const data = response.data;
     if (!confirmation) {
       const review = validateReview(data?.review,current);
+      const flags = current.kind === 'creative' ? data.current_flags : data.preserved_flags;
       if (data.environment !== 'test' || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
           !review.checks_passed || !review.changes.length || review.kind !== current.kind || !review.target_id ||
-          typeof data.preserved_flags?.approved !== 'boolean' || typeof data.preserved_flags?.enabled !== 'boolean') throw Error('Invalid publishing summary');
+          typeof flags?.approved !== 'boolean' || typeof flags?.enabled !== 'boolean' ||
+          (current.kind === 'creative' && (data.approval_cleared !== true || data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false))) throw Error('Invalid publishing summary');
       showReview(review,true);
-      const flags = data.preserved_flags;
-      $('draft-review').append(node('p','Values preserved: Approved: ' + display('approved',flags.approved) + ' \u00b7 Enabled: ' + display('enabled',flags.enabled)));
+      $('draft-review').append(node('p',current.kind === 'creative' ?
+        'After publication: Approved: No. Enabled: No. Existing approval is cleared. This creative stops serving until separately reviewed and activated.' :
+        'Values preserved: Approved: ' + display('approved',flags.approved) + ' \u00b7 Enabled: ' + display('enabled',flags.enabled)));
       const publish = node('button','Publish ' + current.kind + ' settings','primary'); publish.type = 'button';
       publish.onclick = () => campaignPublish(data.confirmation,ticket); $('draft-review').append(publish);
       $('draft-status').textContent = 'Check the exact changes and warnings above, then choose Publish ' + current.kind + ' settings to confirm.';
     } else {
       if (data?.environment !== 'test' || data.draft_id !== current.id || data.revision !== current.revision ||
           data.target_id !== current.target_id || data.settings_published !== true || typeof data.history_id !== 'string' ||
-          !/^[0-9a-f]{64}$/.test(data.history_id) || !Number.isFinite(Date.parse(data.published_at))) throw Error('Invalid publication receipt');
+          !/^[0-9a-f]{64}$/.test(data.history_id) || !Number.isFinite(Date.parse(data.published_at)) ||
+          (current.kind === 'creative' && (data.approval_cleared !== true || data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false))) throw Error('Invalid publication receipt');
       await load();
-      if (user?.uid === uid) notice((current.kind === 'creative' ? 'Creative' : 'Campaign') + ' settings published in the test project. Approval and enabled values were preserved.');
+      if (user?.uid === uid) notice(current.kind === 'creative' ?
+        'Creative edits published in the test project. Approval cleared. Enabled: No. Review and activation are required before delivery.' :
+        'Campaign settings published in the test project. Approval and enabled values were preserved.');
     }
   } catch (error) {
     if (!active()) return;
