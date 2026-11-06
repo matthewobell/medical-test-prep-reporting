@@ -19,6 +19,8 @@ const prepareCreativePublish = httpsCallable(getFunctions(app, config.region), '
 const publishCreativeDraft = httpsCallable(getFunctions(app, config.region), 'publish_creative_draft');
 const requestPublishedPreview = httpsCallable(getFunctions(app, config.region), 'preview_published_media');
 let publishedPreviewRequest = 0;
+const requestCampaignResume = httpsCallable(getFunctions(app, config.region), 'resume_campaign');
+let resumeRequest = 0, resumeBusyTicket = null, resumePanel = null;
 const requestCampaignPause = httpsCallable(getFunctions(app, config.region), 'pause_campaign');
 const requestCampaignRollback = httpsCallable(getFunctions(app, config.region), 'campaign_rollback');
 let rollbackRequest = 0, rollbackBusyTicket = null, rollbackPanel = null;
@@ -59,6 +61,7 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  ++resumeRequest; resumeBusyTicket = null; resumePanel = null;
   ++rollbackRequest; rollbackBusyTicket = null; rollbackPanel = null;
   campaignPauseBusy = false; ++pauseRequest;
   invalidateReview();
@@ -166,6 +169,7 @@ function display(key, value) {
   return String(value);
 }
 function detail(row) {
+  ++resumeRequest; resumePanel = null;
   ++publishedPreviewRequest;
   ++rollbackRequest; rollbackPanel = null;
   $('details').replaceChildren(node('h2', row.name || row.id,'workspace-title'));
@@ -257,7 +261,69 @@ function detail(row) {
     const pause = node('button','Pause campaign','related'); pause.type = 'button';
     pause.onclick = () => pauseCampaign(row,pause); $('details').append(pause);
   }
+  if (section === 'campaigns' && row.enabled === false && row.approved === true) {
+    const resume = node('button','Resume campaign','related'); resume.type = 'button';
+    resume.onclick = () => {
+      if (resumeBusyTicket !== null || !user || !catalog || editor) return;
+      if (resumePanel) resumePanel.remove();
+      resumePanel = node('section',undefined,'note'); resumePanel.setAttribute('aria-label','Campaign resume review');
+      $('details').append(resumePanel); resumeCampaign(row,resumePanel);
+    };
+    $('details').append(resume);
+  }
   if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign\u2019s exposure share.','muted'));
+}
+async function resumeCampaign(row,panel,confirmation = null,preparedTicket = null) {
+  if (!user || !catalog || editor || resumeBusyTicket !== null ||
+      (preparedTicket !== null && preparedTicket !== resumeRequest)) return;
+  const run = generation, uid = user.uid, currentCatalog = catalog, ticket = ++resumeRequest;
+  const active = () => generation === run && user?.uid === uid && catalog === currentCatalog && !editor &&
+    section === 'campaigns' && selected === row.id && resumePanel === panel && ticket === resumeRequest && panel.isConnected;
+  resumeBusyTicket = ticket;
+  const status = node('p',confirmation ? 'Resuming the confirmed campaign...' : 'Checking campaign eligibility...');
+  status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); panel.replaceChildren(status);
+  try {
+    const data = (await requestCampaignResume({action:confirmation ? 'resume' : 'prepare',target_id:row.id,
+      ...(confirmation ? {confirmation} : {})})).data;
+    if (!active()) return;
+    if (confirmation) {
+      if (data?.environment !== 'test' || data.target_id !== row.id || data.resumed !== true || data.enabled !== true ||
+          data.approved !== true || !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.resumed_at))) throw Error('Invalid resume receipt');
+      await load();
+      if (user?.uid === uid) notice('Campaign enabled in the test project. Ad delivery follows its saved schedule and targeting.');
+      return;
+    }
+    if (data?.environment !== 'test' || data.target_id !== row.id || data.enabled !== false || data.approved !== true ||
+        !/^[0-9a-f]{64}$/.test(data.confirmation || '') || !data.campaign || data.campaign.id !== row.id) throw Error('Invalid resume summary');
+    const campaign = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),
+      sponsors:[],campaigns:[data.campaign],creatives:[]}).campaigns[0];
+    if (campaign.enabled !== false || campaign.approved !== true || !campaign.platforms?.length ||
+        !data.eligible_creatives || Object.keys(data.eligible_creatives).length !== campaign.platforms.length ||
+        !campaign.platforms.every(platform => Array.isArray(data.eligible_creatives[platform]) &&
+          data.eligible_creatives[platform].length > 0 && data.eligible_creatives[platform].length <= 500 &&
+          data.eligible_creatives[platform].every(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)))) throw Error('Invalid eligibility summary');
+    panel.replaceChildren(node('h3','Review campaign resume'),
+      node('p','Only Enabled changes from No to Yes. Approval and all settings below stay unchanged. Nothing has resumed yet.'));
+    const list = node('dl');
+    for (const key of fields.campaigns) detailField(list,labels[key],reviewValue(key,campaign[key]));
+    panel.append(list);
+    for (const platform of campaign.platforms) panel.append(node('p',
+      (platform === 'ios' ? 'iOS' : 'Android') + ' eligible creatives: ' + data.eligible_creatives[platform].map(id => name('creatives',id)).join(', ')));
+    panel.append(node('p','Approval, sponsor status, remaining dates, creative coverage, and booking conflicts were checked. Media playback is not verified by this check. Confirming rechecks the current settings.','muted'));
+    const confirm = node('button','Confirm resume campaign'); confirm.type = 'button';
+    confirm.onclick = () => resumeCampaign(row,panel,data.confirmation,ticket);
+    panel.append(confirm);
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff resume access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    panel.replaceChildren(node('p',confirmation ?
+      'Resume could not be confirmed. Refresh the library and check Enabled before trying again; the request may have completed.' :
+      'Resume checks did not pass. Refresh the library and review approval, sponsor status, dates, creative coverage, and exposure shares.'));
+  } finally {
+    if (resumeBusyTicket === ticket) resumeBusyTicket = null;
+  }
 }
 async function pauseCampaign(row,button) {
   if (!user || !catalog || editor || campaignPauseBusy || row.enabled !== true) return;
