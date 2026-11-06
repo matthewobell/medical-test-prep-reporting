@@ -13,6 +13,7 @@ let user = null, catalog = null, generation = 0, appCheck, timer, ready = false,
 const fetchDrafts = httpsCallable(getFunctions(app, config.region), 'get_ad_drafts');
 const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_draft');
 const fetchReview = httpsCallable(getFunctions(app, config.region), 'review_ad_draft');
+const requestCreativeCreate = httpsCallable(getFunctions(app, config.region), 'create_creative');
 const requestCampaignCreate = httpsCallable(getFunctions(app, config.region), 'create_campaign');
 const prepareCampaignPublish = httpsCallable(getFunctions(app, config.region), 'prepare_campaign_publish');
 const publishCampaignDraft = httpsCallable(getFunctions(app, config.region), 'publish_campaign_draft');
@@ -912,7 +913,7 @@ function showReview(data, finalSummary = false) {
   const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
   const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
   box.append(heading,node('p','Saved revision ' + data.revision + ' \u00b7 Draft ID: ' + data.draft_id + ' \u00b7 Reviewed ' + localTime(data.reviewed_at),'muted'),
-    node('p',finalSummary ? (data.kind === 'campaign' && data.target_id === null ? 'Final creation summary. Confirm below to create an unapproved, disabled campaign in the test project.' : 'Final publishing summary. Confirm below to update ' + data.kind + ' settings used for ad delivery in the test project.') : 'Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
+    node('p',finalSummary ? (['campaign','creative'].includes(data.kind) && data.target_id === null ? 'Final creation summary. Confirm below to create an unapproved, disabled ' + data.kind + ' in the test project.' : 'Final publishing summary. Confirm below to update ' + data.kind + ' settings used for ad delivery in the test project.') : 'Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
   for (const severity of ['error','warning']) {
     const items = data.issues.filter(issue => issue.severity === severity);
     if (!items.length) continue;
@@ -930,6 +931,10 @@ function showReview(data, finalSummary = false) {
   if (!finalSummary && data.kind === 'campaign' && data.target_id === null && data.checks_passed && data.changes.length) {
     const prepare = node('button','Prepare inactive campaign summary'); prepare.type = 'button';
     prepare.onclick = () => createCampaign(); box.append(prepare);
+  }
+  if (!finalSummary && data.kind === 'creative' && data.target_id === null && data.checks_passed && data.changes.length) {
+    const prepare = node('button','Prepare inactive creative summary'); prepare.type = 'button';
+    prepare.onclick = () => createCreative(); box.append(prepare);
   }
   if (!finalSummary && ['campaign','creative'].includes(data.kind) && data.target_id && data.checks_passed && data.changes.length) {
     const prepare = node('button','Prepare publishing summary'); prepare.type = 'button';
@@ -974,6 +979,50 @@ async function createCampaign(confirmation = null, preparedTicket = null) {
     }
     $('draft-status').textContent = error?.code?.includes('already-exists') ?
       'This draft already created a campaign. Refresh the library and open that campaign.' : error?.code?.includes('aborted') ?
+      'The draft or catalog changed. Review again and prepare a new summary.' : confirmation ?
+      'Creation could not be confirmed. Refresh the library before trying again; the request may have completed.' :
+      'A creation summary could not be prepared. Review the saved draft and correct blocking issues.';
+  } finally {
+    if (generation === run && user?.uid === uid && editor === current) { mediaLock(false); $('review-draft').disabled = false; }
+  }
+}
+async function createCreative(confirmation = null, preparedTicket = null) {
+  if (!editor || !user || draftBusy || dirty || !editor.id || editor.kind !== 'creative' || editor.target_id !== null ||
+      (confirmation && preparedTicket !== reviewRequest)) return;
+  const current = editor, run = generation, uid = user.uid, ticket = reviewRequest;
+  const active = () => editor === current && generation === run && user?.uid === uid && ticket === reviewRequest;
+  mediaLock(true); $('review-draft').disabled = true;
+  $('draft-status').textContent = confirmation ? 'Creating the inactive creative...' : 'Checking the inactive creative summary...';
+  try {
+    const data = (await requestCreativeCreate({draft_id:current.id,expected_revision:current.revision,
+      ...(confirmation ? {confirmation} : {})})).data;
+    if (!active()) return;
+    if (!confirmation) {
+      const review = validateReview(data?.review,current);
+      if (data.environment !== 'test' || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
+          !/^creative-[0-9a-f]{64}$/.test(data.new_target_id || '') || data.approved !== false || data.enabled !== false ||
+          !review.checks_passed || !review.changes.length || review.kind !== 'creative' || review.target_id !== null) throw Error('Invalid creation summary');
+      showReview(review,true);
+      $('draft-review').append(node('p','Creates a new creative in the test project with Approved: No and Enabled: No. It will not serve ads. Approval and activation require separate actions.'),
+        node('p','New record ID: ' + data.new_target_id,'muted'));
+      const confirm = node('button','Create inactive creative','primary'); confirm.type = 'button';
+      confirm.onclick = () => createCreative(data.confirmation,ticket); $('draft-review').append(confirm);
+      $('draft-status').textContent = 'Review the saved settings and warnings, then choose Create inactive creative to confirm.';
+    } else {
+      if (data?.environment !== 'test' || data.draft_id !== current.id || data.revision !== current.revision ||
+          !/^creative-[0-9a-f]{64}$/.test(data.target_id || '') || data.created !== true || data.approved !== false || data.enabled !== false ||
+          !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.created_at))) throw Error('Invalid creation receipt');
+      await load();
+      if (user?.uid === uid) notice('New creative created in the test project. Approved: No. Enabled: No. It will not serve ads.');
+    }
+  } catch (error) {
+    if (!active()) return;
+    invalidateReview();
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff creation access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    $('draft-status').textContent = error?.code?.includes('already-exists') ?
+      'This draft already created a creative. Refresh the library and open that creative.' : error?.code?.includes('aborted') ?
       'The draft or catalog changed. Review again and prepare a new summary.' : confirmation ?
       'Creation could not be confirmed. Refresh the library before trying again; the request may have completed.' :
       'A creation summary could not be prepared. Review the saved draft and correct blocking issues.';
