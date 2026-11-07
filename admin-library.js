@@ -13,6 +13,8 @@ let user = null, catalog = null, generation = 0, appCheck, timer, ready = false,
 const fetchDrafts = httpsCallable(getFunctions(app, config.region), 'get_ad_drafts');
 const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_draft');
 const fetchReview = httpsCallable(getFunctions(app, config.region), 'review_ad_draft');
+const requestCreativeActivation = httpsCallable(getFunctions(app, config.region), 'activate_creative');
+let activationRequest = 0, activationBusyTicket = null, activationPanel = null;
 const requestCreativeApproval = httpsCallable(getFunctions(app, config.region), 'approve_creative');
 let approvalRequest = 0, approvalBusyTicket = null, approvalPanel = null;
 const requestCreativeCreate = httpsCallable(getFunctions(app, config.region), 'create_creative');
@@ -65,6 +67,7 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  ++activationRequest; activationBusyTicket = null; activationPanel = null;
   ++approvalRequest; approvalBusyTicket = null; approvalPanel = null;
   ++resumeRequest; resumeBusyTicket = null; resumePanel = null;
   ++rollbackRequest; rollbackBusyTicket = null; rollbackPanel = null;
@@ -174,6 +177,7 @@ function display(key, value) {
   return String(value);
 }
 function detail(row) {
+  ++activationRequest; activationPanel = null;
   ++approvalRequest; approvalPanel = null;
   ++resumeRequest; resumePanel = null;
   ++publishedPreviewRequest;
@@ -287,7 +291,89 @@ function detail(row) {
     };
     $('details').append(approve);
   }
+  if (section === 'creatives' && row.approved === true && row.enabled === false) {
+    const activate = node('button','Review creative activation','related'); activate.type = 'button';
+    activate.onclick = () => {
+      if (!user || !catalog || editor || activationBusyTicket !== null) return;
+      if (activationPanel) activationPanel.remove();
+      activationPanel = node('section',undefined,'note'); activationPanel.setAttribute('aria-label','Creative activation review');
+      $('details').append(activationPanel); activateCreative(row,activationPanel);
+    };
+    $('details').append(activate);
+  }
   if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign\u2019s exposure share.','muted'));
+}
+async function activateCreative(row,panel,confirmation = null,preparedTicket = null) {
+  if (!user || !catalog || editor || activationBusyTicket !== null ||
+      (confirmation && preparedTicket !== activationRequest)) return;
+  const run = generation, uid = user.uid, currentCatalog = catalog, ticket = ++activationRequest;
+  const active = () => generation === run && user?.uid === uid && catalog === currentCatalog && !editor &&
+    section === 'creatives' && selected === row.id && activationPanel === panel && ticket === activationRequest && panel.isConnected;
+  activationBusyTicket = ticket;
+  const status = node('p',confirmation ? 'Enabling the confirmed creative...' : 'Checking approval, private media, and campaign status...');
+  status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); panel.replaceChildren(status);
+  try {
+    const data = (await requestCreativeActivation({action:confirmation ? 'activate' : 'prepare',target_id:row.id,
+      ...(confirmation ? {confirmation} : {})})).data;
+    if (!active()) return;
+    if (confirmation) {
+      if (data?.environment !== 'test' || data.target_id !== row.id || data.activated !== true || data.approved !== true || data.enabled !== true ||
+          !/^[0-9a-f]{64}$/.test(data.history_id || '') || !/^[0-9a-f]{64}$/.test(data.content_digest || '') ||
+          !Number.isFinite(Date.parse(data.activated_at))) throw Error('Invalid activation receipt');
+      await load();
+      if (user?.uid === uid) notice('Creative enabled in the test project. Approval preserved. Delivery still requires an active campaign and eligible schedule.');
+      return;
+    }
+    if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
+        !/^[0-9a-f]{64}$/.test(data.confirmation || '') || data.creative?.id !== row.id ||
+        !/^[0-9a-f]{64}$/.test(data.approval?.content_digest || '') ||
+        typeof data.approval?.approved_by !== 'string' || !data.approval.approved_by || data.approval.approved_by.length > 200 ||
+        !Number.isFinite(Date.parse(data.approval?.approved_at)) || !Array.isArray(data.warnings) ||
+        data.warnings.length > 500 || data.warnings.some(value => typeof value !== 'string' || value.length > 4000)) throw Error('Invalid activation summary');
+    const checked = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),
+      sponsors:[],campaigns:[data.campaign],creatives:[data.creative]});
+    const creative = checked.creatives[0], campaign = checked.campaigns[0];
+    if (creative.approved !== true || creative.enabled !== false || creative.campaign_id !== campaign.id ||
+        !['image','video'].includes(creative.media_type)) throw Error('Invalid activation records');
+    const slots = creative.media_type === 'image' ? {image:'image_url'} : {video:'video_url',poster:'video_poster_image_url'};
+    if (!data.approval.media || Object.keys(data.approval.media).length !== Object.keys(slots).length) throw Error('Invalid approval evidence');
+    for (const [slot,key] of Object.entries(slots)) {
+      const evidence = data.approval.media[slot];
+      if (!evidence || !/^published\/[0-9a-f]{64}$/.test(evidence.path || '') ||
+          creative[key] !== 'https://storage.googleapis.com/medical-test-prep-ads-test-published-media/' + evidence.path ||
+          !/^[0-9]{1,30}$/.test(evidence.generation || '') || !Number.isSafeInteger(evidence.size) || evidence.size <= 0 ||
+          evidence.size > (slot === 'video' ? 50 : 10)*1024*1024 || !/^[A-Za-z0-9+/]{6}==$/.test(evidence.crc32c || '') ||
+          !(slot === 'video' ? ['video/mp4'] : ['image/png','image/jpeg','image/webp']).includes(evidence.content_type)) throw Error('Invalid approved media');
+    }
+    panel.replaceChildren(node('h3','Review creative activation'),node('p',
+      'Only Enabled changes from No to Yes. Approval and creative settings stay unchanged. This action does not approve or enable the parent campaign. Nothing has been activated yet.'));
+    const list = node('dl');
+    for (const key of fields.creatives) detailField(list,labels[key],reviewValue(key,creative[key]));
+    detailField(list,'Parent campaign approved',display('approved',campaign.approved));
+    detailField(list,'Parent campaign enabled',display('enabled',campaign.enabled));
+    detailField(list,'Creative approved by',data.approval.approved_by);
+    detailField(list,'Creative approved at',localTime(data.approval.approved_at));
+    panel.append(list);
+    if (data.warnings.length) {
+      panel.append(node('h4','Warnings'));
+      const warnings = node('ul'); for (const warning of data.warnings) warnings.append(node('li',warning)); panel.append(warnings);
+    }
+    for (const slot of Object.keys(slots)) panel.append(node('p','Verified private ' + (slot === 'poster' ? 'video cover' : slot) + ' version: ' + data.approval.media[slot].generation,'muted'));
+    panel.append(node('p','The saved content and private media match their recorded approval. Confirming rechecks them, staff access, dates, platforms, and current campaign configuration.','muted'));
+    const confirm = node('button','Confirm creative activation'); confirm.type = 'button';
+    confirm.onclick = () => activateCreative(row,panel,data.confirmation,ticket);
+    panel.append(confirm);
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff activation access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    panel.replaceChildren(node('p',confirmation ?
+      'Activation could not be confirmed. Refresh the library and check Enabled before retrying; the request may have completed. Changed content, media, or approval requires a new review.' :
+      'Activation checks did not pass. Review the saved approval, private media, sponsor, dates, and platforms. Creatives without recorded approval must be reviewed and approved first.'));
+  } finally {
+    if (activationBusyTicket === ticket) activationBusyTicket = null;
+  }
 }
 async function approveCreative(row,panel,confirmation = null,preparedTicket = null,acknowledged = false) {
   if (!user || !catalog || editor || approvalBusyTicket !== null ||
