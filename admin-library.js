@@ -29,6 +29,8 @@ const requestPublishedPreview = httpsCallable(getFunctions(app, config.region), 
 let publishedPreviewRequest = 0;
 const requestCampaignResume = httpsCallable(getFunctions(app, config.region), 'resume_campaign');
 let resumeRequest = 0, resumeBusyTicket = null, resumePanel = null;
+const requestCreativePause = httpsCallable(getFunctions(app, config.region), 'pause_creative');
+let creativePauseBusy = false, creativePauseRequest = 0;
 const requestCampaignPause = httpsCallable(getFunctions(app, config.region), 'pause_campaign');
 const requestCampaignRollback = httpsCallable(getFunctions(app, config.region), 'campaign_rollback');
 let rollbackRequest = 0, rollbackBusyTicket = null, rollbackPanel = null;
@@ -74,6 +76,7 @@ function clearLibrary() {
   ++approvalRequest; approvalBusyTicket = null; approvalPanel = null;
   ++resumeRequest; resumeBusyTicket = null; resumePanel = null;
   ++rollbackRequest; rollbackBusyTicket = null; rollbackPanel = null;
+  creativePauseBusy = false; ++creativePauseRequest;
   campaignPauseBusy = false; ++pauseRequest;
   invalidateReview();
   clearMediaPreview();
@@ -284,6 +287,10 @@ function detail(row) {
       $('details').append(resumePanel); resumeCampaign(row,resumePanel);
     };
     $('details').append(resume);
+  }
+  if (section === 'creatives' && row.enabled === true) {
+    const pause = node('button','Pause creative','related'); pause.type = 'button';
+    pause.onclick = () => pauseCreative(row,pause); $('details').append(pause);
   }
   if (section === 'creatives' && row.approved === false && row.enabled === false) {
     const approve = node('button','Review creative approval','related'); approve.type = 'button';
@@ -633,6 +640,44 @@ async function pauseCampaign(row,button) {
   } finally {
     button.disabled = false;
     if (pauseRequest === ticket) campaignPauseBusy = false;
+  }
+}
+async function pauseCreative(row,button) {
+  if (!user || !catalog || editor || creativePauseBusy || row.enabled !== true) return;
+  const run = generation, uid = user.uid, currentCatalog = catalog, ticket = ++creativePauseRequest;
+  const active = () => generation === run && user?.uid === uid && catalog === currentCatalog &&
+    ticket === creativePauseRequest && !editor;
+  creativePauseBusy = true; button.disabled = true;
+  notice('Preparing creative pause confirmation...');
+  let sent = false;
+  try {
+    const summary = (await requestCreativePause({action:'prepare',target_id:row.id})).data;
+    if (!active() || section !== 'creatives' || selected !== row.id) return;
+    if (summary?.environment !== 'test' || summary.target_id !== row.id || summary.enabled !== true ||
+        typeof summary.name !== 'string' || !summary.name || summary.name.length > 200 ||
+        !/^[0-9a-f]{64}$/.test(summary.confirmation || '')) throw Error('Invalid pause summary');
+    if (!window.confirm('Pause \u201c' + summary.name + '\u201d?\n\nThis stops new ad selections for this creative. Ads already displayed may finish. Approval, content, media, and parent campaign settings stay unchanged. Other eligible ads may continue. If none remain, delivery may fall back or skip.')) return;
+    if (!active()) return;
+    notice('Pausing creative...');
+    sent = true;
+    const receipt = (await requestCreativePause({action:'pause',target_id:row.id,confirmation:summary.confirmation})).data;
+    if (!active()) return;
+    if (receipt?.environment !== 'test' || receipt.target_id !== row.id || receipt.paused !== true || receipt.enabled !== false ||
+        !/^[0-9a-f]{64}$/.test(receipt.history_id || '') || !Number.isFinite(Date.parse(receipt.paused_at))) throw Error('Invalid pause receipt');
+    await load();
+    if (user?.uid === uid) notice('Creative paused in the test project. New ad selections for it are stopped.');
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff pause access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    notice(error?.code?.includes('aborted') ? 'The creative changed. Refresh the library and confirm its pause again.' :
+      error?.code?.includes('failed-precondition') ? 'This creative is already disabled or its state needs review. Refresh the library.' :
+      sent ? 'Pause could not be confirmed. Refresh the library to check Enabled before trying again; the request may have completed.' :
+      'A pause confirmation could not be prepared. Refresh the library and try again.',true);
+  } finally {
+    button.disabled = false;
+    if (creativePauseRequest === ticket) creativePauseBusy = false;
   }
 }
 async function rollbackCampaign(row,panel,action,historyId = null,confirmation = null,preparedTicket = null) {
@@ -1396,7 +1441,7 @@ $('tab-drafts').onclick = () => switchSection('drafts');
 $('reload-draft').onclick = () => {
   if (editor?.id && !draftBusy && (!dirty || window.confirm('Discard your unsaved changes and load the latest saved version?'))) readDraft(editor.id,$('reload-draft'));
 };
-window.addEventListener('beforeunload',event => { if (dirty || draftBusy || campaignPauseBusy || rollbackBusyTicket !== null) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload',event => { if (dirty || draftBusy || campaignPauseBusy || creativePauseBusy || rollbackBusyTicket !== null) { event.preventDefault(); event.returnValue = ''; } });
 $('draft-form').onsubmit = async event => {
   event.preventDefault(); if (!editor || !user || draftBusy) return;
   const run = generation, uid = user.uid, current = editor;
@@ -1471,7 +1516,7 @@ $('email-form').onsubmit = async event => {
 };
 $('email-retry').onclick = resetLink;
 $('sign-out').onclick = async () => {
-  if ((dirty || draftBusy || campaignPauseBusy || rollbackBusyTicket !== null) && !window.confirm('Leave this editor and sign out? Any unsaved changes will be discarded. A save, publication, pause, or restoration already sent may still finish.')) return;
+  if ((dirty || draftBusy || campaignPauseBusy || creativePauseBusy || rollbackBusyTicket !== null) && !window.confirm('Leave this editor and sign out? Any unsaved changes will be discarded. A save, publication, pause, or restoration already sent may still finish.')) return;
   ++generation; clearLibrary(); resetLink(); $('email').value = '';
   try { await signOut(auth); } catch { notice('Sign-out could not finish. Close this tab to end this session.',true); }
 };
