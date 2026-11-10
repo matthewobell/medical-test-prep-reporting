@@ -29,6 +29,9 @@ const requestPublishedPreview = httpsCallable(getFunctions(app, config.region), 
 let publishedPreviewRequest = 0;
 const requestCampaignResume = httpsCallable(getFunctions(app, config.region), 'resume_campaign');
 let resumeRequest = 0, resumeBusyTicket = null, resumePanel = null;
+const requestSponsorActivate = httpsCallable(getFunctions(app, config.region), 'activate_sponsor');
+const requestSponsorPause = httpsCallable(getFunctions(app, config.region), 'pause_sponsor');
+let sponsorStatusRequest = 0, sponsorStatusBusy = null, sponsorStatusPanel = null;
 const requestSponsorCreate = httpsCallable(getFunctions(app, config.region), 'create_sponsor');
 let sponsorCreate = null, sponsorCreateBusy = false, sponsorCreateTicket = 0;
 const requestCreativePause = httpsCallable(getFunctions(app, config.region), 'pause_creative');
@@ -73,6 +76,7 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  ++sponsorStatusRequest; sponsorStatusBusy = null; sponsorStatusPanel = null;
   sponsorCreate = null; sponsorCreateBusy = false; ++sponsorCreateTicket;
   $('sponsor-create').hidden = true; $('sponsor-create-summary').replaceChildren();
   ++campaignApprovalRequest; campaignApprovalBusyTicket = null; campaignApprovalPanel = null;
@@ -267,6 +271,17 @@ function detail(row) {
       selected = null; render();
     };
     related.append(button); $('details').append(related);
+  }
+  if (section === 'sponsors' && typeof row.enabled === 'boolean') {
+    const action = row.enabled ? 'pause' : 'activate';
+    const button = node('button',row.enabled ? 'Review sponsor pause' : 'Review sponsor activation','related'); button.type = 'button';
+    button.onclick = () => {
+      if (!user || !catalog || editor || sponsorStatusBusy !== null) return;
+      if (sponsorStatusPanel) sponsorStatusPanel.remove();
+      sponsorStatusPanel = node('section',undefined,'note'); sponsorStatusPanel.setAttribute('aria-label','Sponsor status review');
+      $('details').append(sponsorStatusPanel); sponsorStatus(row,sponsorStatusPanel,action);
+    };
+    $('details').append(button);
   }
   if (section === 'campaigns') {
     const restore = node('button','Restore previous settings','related'); restore.type = 'button';
@@ -645,6 +660,104 @@ async function pauseCampaign(row,button) {
     button.disabled = false;
     if (pauseRequest === ticket) campaignPauseBusy = false;
   }
+}
+async function sponsorStatus(row,panel,action,prepared = null,preparedTicket = null) {
+  if (!user || !catalog || editor || sponsorStatusBusy !== null || !['activate','pause'].includes(action) ||
+      (prepared && preparedTicket !== sponsorStatusRequest)) return;
+  const run = generation, uid = user.uid, currentCatalog = catalog, ticket = ++sponsorStatusRequest;
+  const active = () => generation === run && user?.uid === uid && catalog === currentCatalog && !editor &&
+    section === 'sponsors' && selected === row.id && sponsorStatusPanel === panel && panel.isConnected && ticket === sponsorStatusRequest;
+  sponsorStatusBusy = ticket;
+  panel.replaceChildren();
+  const status = node('p',prepared ? (action === 'activate' ? 'Activating sponsor...' : 'Pausing sponsor...') : 'Preparing sponsor review...');
+  status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); panel.append(status);
+  const callable = action === 'activate' ? requestSponsorActivate : requestSponsorPause;
+  try {
+    const data = (await callable({action:prepared ? action : 'prepare',target_id:row.id,
+      ...(prepared ? {confirmation:prepared.confirmation} : {})})).data;
+    if (!active()) return;
+    if (prepared) {
+      const enabled = action === 'activate';
+      if (data?.environment !== 'test' || data.target_id !== row.id || data.enabled !== enabled ||
+          data[enabled ? 'activated' : 'paused'] !== true || data[enabled ? 'activated_by' : 'paused_by'] !== uid ||
+          !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data[enabled ? 'activated_at' : 'paused_at']))) throw Error('Invalid sponsor status receipt');
+      if (enabled && (data.approval_verified !== true || !Array.isArray(data.potential_campaign_ids) ||
+          JSON.stringify([...data.potential_campaign_ids].sort()) !== JSON.stringify([...prepared.campaignIds].sort()))) throw Error('Invalid activation evidence');
+      await load();
+      if (user?.uid !== uid || generation !== run + 1 || !catalog) return;
+      section = 'sponsors'; selected = row.id; remembered.sponsors = row.id;
+      $('sponsor-filter').value = 'all'; $('campaign-filter').value = 'all'; $('record-status').value = 'all'; $('library-search').value = '';
+      rememberSelection(); render();
+      const result = node('p',enabled ? 'Sponsor activated in the test project. Campaign and creative settings were preserved.' :
+        'Sponsor paused in the test project. New ad selections across its campaigns are stopped; campaign and creative settings were preserved.');
+      result.setAttribute('role','status'); $('details').append(result); return;
+    }
+    if (data?.environment !== 'test' || data.target_id !== row.id || data.enabled !== (action === 'pause') ||
+        !/^[0-9a-f]{64}$/.test(data.confirmation || '')) throw Error('Invalid sponsor review');
+    let sponsor, linked = [], campaignIds = [];
+    if (action === 'activate') {
+      if (data.approval_verified !== true || !Array.isArray(data.linked_campaigns) || data.linked_campaigns.length > 500 ||
+          !Array.isArray(data.warnings) || data.warnings.length > 10 || data.warnings.some(v => typeof v !== 'string' || v.length > 1000)) throw Error('Invalid activation review');
+      const checked = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),sponsors:[data.sponsor],campaigns:data.linked_campaigns,creatives:[]});
+      sponsor = checked.sponsors[0]; linked = data.linked_campaigns;
+      if (sponsor.id !== row.id || sponsor.enabled !== false || sponsor.name !== row.name || sponsor.logo_url !== row.logo_url ||
+          new Set(linked.map(c => c.id)).size !== linked.length || linked.some(c => c.sponsor_id !== row.id || typeof c.may_deliver !== 'boolean' || typeof c.scheduled_for_later !== 'boolean')) throw Error('Mismatched sponsor review');
+      const knownLinked = currentCatalog.campaigns.filter(c => c.sponsor_id === row.id);
+      if (JSON.stringify(knownLinked.map(c => c.id).sort()) !== JSON.stringify(linked.map(c => c.id).sort()) ||
+          linked.some(c => c.may_deliver && (c.approved !== true || c.enabled !== true) || c.scheduled_for_later && !c.may_deliver)) throw Error('Incomplete linked campaign review');
+      campaignIds = linked.filter(c => c.may_deliver).map(c => c.id);
+      const proofs = data.verified_campaign_approvals, creatives = data.verified_creative_approvals;
+      if (!proofs || typeof proofs !== 'object' || Array.isArray(proofs) || !creatives || typeof creatives !== 'object' || Array.isArray(creatives) ||
+          JSON.stringify(Object.keys(proofs).sort()) !== JSON.stringify([...campaignIds].sort()) || Object.keys(creatives).length > 500) throw Error('Missing verified approvals');
+      for (const proof of Object.values(proofs)) {
+        if (!/^[0-9a-f]{64}$/.test(proof?.settings_digest || '') || typeof proof.approved_by !== 'string' || !proof.approved_by || !Number.isFinite(Date.parse(proof.approved_at))) throw Error('Invalid campaign approval');
+      }
+      for (const [id,proof] of Object.entries(creatives)) {
+        const creative = currentCatalog.creatives.find(c => c.id === id);
+        if (!creative || !campaignIds.includes(creative.campaign_id) || !/^[0-9a-f]{64}$/.test(proof?.content_digest || '') ||
+            typeof proof.approved_by !== 'string' || !proof.approved_by || !Number.isFinite(Date.parse(proof.approved_at)) ||
+            !proof.media || typeof proof.media !== 'object' || Array.isArray(proof.media)) throw Error('Invalid creative approval');
+        const slots = creative.media_type === 'image' ? ['image'] : ['poster','video'];
+        if (JSON.stringify(Object.keys(proof.media).sort()) !== JSON.stringify([...slots].sort())) throw Error('Missing private media evidence');
+        for (const [slot,media] of Object.entries(proof.media)) {
+          if (!/^published\/[0-9a-f]{64}$/.test(media?.path || '') || !/^[0-9]{1,30}$/.test(media.generation || '') ||
+              !Number.isInteger(media.size) || media.size <= 0 || media.size > (slot === 'video' ? 50 : 10)*1024*1024 ||
+              !(slot === 'video' ? ['video/mp4'] : ['image/jpeg','image/png','image/webp']).includes(media.content_type) ||
+              !/^[A-Za-z0-9+/]{6}==$/.test(media.crc32c || '')) throw Error('Invalid private media evidence');
+        }
+      }
+      if (campaignIds.some(id => !Object.keys(creatives).some(key => currentCatalog.creatives.find(c => c.id === key)?.campaign_id === id))) throw Error('Missing campaign creative proof');
+    } else {
+      if (typeof data.name !== 'string' || data.name !== row.name || !data.name || data.name.length > 200) throw Error('Invalid sponsor pause review');
+      sponsor = row;
+    }
+    panel.replaceChildren(node('h3',action === 'activate' ? 'Review sponsor activation' : 'Review sponsor pause'),
+      node('p','Name: ' + sponsor.name),node('p','Sponsor ID: ' + row.id));
+    if (action === 'activate') {
+      panel.append(node('p','Logo link: ' + sponsor.logo_url),node('p','Only Enabled changes from No to Yes. Campaign and creative settings stay unchanged. Nothing has been activated yet.'));
+      if (!linked.length) panel.append(node('p','No linked campaigns. Enabling this sponsor alone will not serve any ads.'));
+      for (const campaign of linked) {
+        panel.append(node('p',campaign.name + ' (ID: ' + campaign.id + ') — ' +
+          (campaign.may_deliver ? (campaign.scheduled_for_later ? 'May deliver during its future schedule.' : 'May deliver now or during its remaining schedule.') : 'Not eligible to deliver under its current flags, dates, or allocation.') +
+          ' Approved: ' + (campaign.approved ? 'Yes' : 'No') + '. Enabled: ' + (campaign.enabled ? 'Yes' : 'No') + '.'));
+      }
+      for (const warning of data.warnings) panel.append(node('p',warning));
+      panel.append(node('p','Relevant recorded approvals and private media versions were checked. Confirming rechecks current settings.'));
+    } else panel.append(node('p','Only Enabled changes from Yes to No. This stops new ad selections across all campaigns belonging to this sponsor. Ads already displayed may finish. Campaign and creative settings stay unchanged. Nothing has been paused yet.'));
+    const confirm = node('button',action === 'activate' ? 'Confirm sponsor activation' : 'Confirm sponsor pause'); confirm.type = 'button';
+    confirm.onclick = () => { if (active()) sponsorStatus(row,panel,action,{confirmation:data.confirmation,campaignIds},ticket); };
+    panel.append(confirm);
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Sponsor status access requires enabled admin or ads-team authorization. Sign in again.',true); return;
+    }
+    status.setAttribute('role','alert');
+    status.textContent = error?.code?.includes('aborted') ? 'The sponsor or linked delivery settings changed. Refresh the library and review again.' : prepared ?
+      'The change could not be confirmed. Refresh the library to check Enabled before trying again; the request may have completed.' : action === 'activate' ?
+      'Activation review could not be prepared. Check sponsor status, linked campaign and creative approvals, private media, dates, coverage, booking conflicts, and service access. Older records need recorded approval before reactivation.' :
+      'Pause review could not be prepared. Refresh the library and check sponsor status and service access.';
+  } finally { if (sponsorStatusBusy === ticket) sponsorStatusBusy = null; }
 }
 function sponsorCreateLock(busy) {
   sponsorCreateBusy = busy;
