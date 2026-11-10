@@ -29,6 +29,8 @@ const requestPublishedPreview = httpsCallable(getFunctions(app, config.region), 
 let publishedPreviewRequest = 0;
 const requestCampaignResume = httpsCallable(getFunctions(app, config.region), 'resume_campaign');
 let resumeRequest = 0, resumeBusyTicket = null, resumePanel = null;
+const requestSponsorCreate = httpsCallable(getFunctions(app, config.region), 'create_sponsor');
+let sponsorCreate = null, sponsorCreateBusy = false, sponsorCreateTicket = 0;
 const requestCreativePause = httpsCallable(getFunctions(app, config.region), 'pause_creative');
 let creativePauseBusy = false, creativePauseRequest = 0;
 const requestCampaignPause = httpsCallable(getFunctions(app, config.region), 'pause_campaign');
@@ -71,6 +73,8 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  sponsorCreate = null; sponsorCreateBusy = false; ++sponsorCreateTicket;
+  $('sponsor-create').hidden = true; $('sponsor-create-summary').replaceChildren();
   ++campaignApprovalRequest; campaignApprovalBusyTicket = null; campaignApprovalPanel = null;
   ++activationRequest; activationBusyTicket = null; activationPanel = null;
   ++approvalRequest; approvalBusyTicket = null; approvalPanel = null;
@@ -641,6 +645,91 @@ async function pauseCampaign(row,button) {
     button.disabled = false;
     if (pauseRequest === ticket) campaignPauseBusy = false;
   }
+}
+function sponsorCreateLock(busy) {
+  sponsorCreateBusy = busy;
+  $('sponsor-create-fields').disabled = busy;
+  $('sponsor-create-review').disabled = busy;
+  $('sponsor-create-close').disabled = busy;
+}
+function sponsorCreateInvalidate() {
+  if (!sponsorCreate || sponsorCreateBusy) return;
+  sponsorCreate.prepared = null; ++sponsorCreateTicket;
+  $('sponsor-create-summary').replaceChildren(); $('sponsor-create-summary').hidden = true;
+  $('sponsor-create-status').textContent = 'Changes need a new review. Nothing has been created.';
+}
+function openSponsorCreate() {
+  if (!user || !catalog || sponsorCreateBusy) return;
+  if (editor && !leaveEditor()) return;
+  if (sponsorCreate) { $('sponsor-create').scrollIntoView?.({block:'start'}); return; }
+  const bytes = new Uint8Array(16); window.crypto.getRandomValues(bytes);
+  sponsorCreate = {request_id:Array.from(bytes,value => value.toString(16).padStart(2,'0')).join(''),prepared:null};
+  ++sponsorCreateTicket; sponsorCreateLock(false);
+  $('sponsor-create-name').value = ''; $('sponsor-create-logo').value = '';
+  $('sponsor-create-status').textContent = '';
+  $('sponsor-create-summary').replaceChildren(); $('sponsor-create-summary').hidden = true;
+  $('sponsor-create').hidden = false; $('sponsor-create').scrollIntoView?.({block:'start'}); $('sponsor-create-name').focus();
+}
+async function createSponsor(confirming = false) {
+  if (!user || !catalog || !sponsorCreate || sponsorCreateBusy || editor) return;
+  if (!$('sponsor-create-form').reportValidity()) return;
+  const current = sponsorCreate, run = generation, uid = user.uid, currentCatalog = catalog;
+  const values = {name:$('sponsor-create-name').value.trim(),logo_url:$('sponsor-create-logo').value.trim()};
+  if (!values.name || values.name.length > 200 || /[\u0000-\u001f\u007f]/.test(values.name)) {
+    $('sponsor-create-status').textContent = 'Enter a name of 1 to 200 characters without control characters.'; return;
+  }
+  try {
+    const logo = new URL(values.logo_url);
+    if (logo.protocol !== 'https:' || !logo.hostname || logo.username || logo.password ||
+        values.logo_url.length > 2048 || /[\s\u0000-\u001f\u007f]/.test(values.logo_url)) throw Error();
+  } catch { $('sponsor-create-status').textContent = 'Enter a complete HTTPS logo link without whitespace or embedded credentials.'; return; }
+  if (confirming && (!current.prepared || JSON.stringify(current.prepared.fields) !== JSON.stringify(values))) {
+    sponsorCreateInvalidate(); return;
+  }
+  const prepared = current.prepared, ticket = ++sponsorCreateTicket;
+  const active = () => generation === run && user?.uid === uid && catalog === currentCatalog &&
+    sponsorCreate === current && ticket === sponsorCreateTicket && !$('sponsor-create').hidden && !editor;
+  sponsorCreateLock(true);
+  $('sponsor-create-status').textContent = confirming ? 'Creating disabled sponsor...' : 'Reviewing sponsor details...';
+  try {
+    const data = (await requestSponsorCreate({action:confirming ? 'create' : 'prepare',request_id:current.request_id,fields:values,
+      ...(confirming ? {confirmation:prepared.confirmation} : {})})).data;
+    if (!active()) return;
+    if (confirming) {
+      if (data?.environment !== 'test' || data.target_id !== prepared.target_id || data.created !== true || data.enabled !== false ||
+          data.created_by !== uid || !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.created_at))) throw Error('Invalid creation receipt');
+      await load();
+      if (user?.uid !== uid || generation !== run + 1 || !catalog) return;
+      section = 'sponsors'; selected = data.target_id; remembered.sponsors = data.target_id;
+      $('sponsor-filter').value = 'all'; $('campaign-filter').value = 'all'; $('record-status').value = 'all'; $('library-search').value = '';
+      rememberSelection(); render(); notice('Sponsor created in the test project. Enabled: No. No campaigns or reporting access were created.');
+      return;
+    }
+    if (data?.environment !== 'test' || data.enabled !== false || !/^sponsor-[0-9a-f]{64}$/.test(data.new_target_id || '') ||
+        !/^[0-9a-f]{64}$/.test(data.confirmation || '') || data.sponsor?.enabled !== false ||
+        data.sponsor.name !== values.name || data.sponsor.logo_url !== values.logo_url ||
+        !Array.isArray(data.warnings) || data.warnings.length > 10 || data.warnings.some(v => typeof v !== 'string' || v.length > 1000)) throw Error('Invalid sponsor summary');
+    current.prepared = {fields:values,confirmation:data.confirmation,target_id:data.new_target_id};
+    const panel = $('sponsor-create-summary'); panel.replaceChildren(node('h3','Review new sponsor'),
+      node('p','Name: ' + values.name),node('p','Logo link: ' + values.logo_url),node('p','Enabled: No'),
+      node('p','This creates a sponsor in the test project. It creates no campaigns and grants no reporting access. Logo availability and appearance are not verified.'));
+    for (const warning of data.warnings) panel.append(node('p',warning));
+    const confirm = node('button','Confirm sponsor creation'); confirm.type = 'button';
+    confirm.onclick = () => { if (active() && current.prepared) createSponsor(true); };
+    panel.append(confirm); panel.hidden = false;
+    $('sponsor-create-status').textContent = 'Review ready. Nothing has been created.';
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Sponsor creation requires enabled admin or ads-team access. Sign in again.',true); return;
+    }
+    if (error?.code?.includes('aborted')) {
+      current.prepared = null; $('sponsor-create-summary').replaceChildren(); $('sponsor-create-summary').hidden = true;
+    }
+    $('sponsor-create-status').textContent = error?.code?.includes('aborted') ? 'The form or catalog changed. Review the sponsor again.' :
+      confirming ? 'Creation could not be confirmed. Refresh the library to check whether the sponsor was created before starting a new form.' :
+      'The review could not be prepared. Check the name, HTTPS logo link, connection, and test service access, then try again.';
+  } finally { if (sponsorCreate === current && generation === run && user?.uid === uid) sponsorCreateLock(false); }
 }
 async function pauseCreative(row,button) {
   if (!user || !catalog || editor || creativePauseBusy || row.enabled !== true) return;
@@ -1435,6 +1524,14 @@ function leaveEditor() {
 $('draft-form').oninput = () => { dirty = true; invalidateReview(); syncAdPreview(); };
 $('draft-form').onchange = () => { dirty = true; invalidateReview(); };
 $('close-draft').onclick = leaveEditor;
+$('new-sponsor').onclick = openSponsorCreate;
+$('sponsor-create-form').onsubmit = event => { event.preventDefault(); createSponsor(); };
+$('sponsor-create-form').oninput = sponsorCreateInvalidate;
+$('sponsor-create-form').onchange = sponsorCreateInvalidate;
+$('sponsor-create-close').onclick = () => {
+  if (sponsorCreateBusy) return;
+  sponsorCreate = null; ++sponsorCreateTicket; $('sponsor-create').hidden = true; $('sponsor-create-summary').replaceChildren();
+};
 $('new-campaign').onclick = () => openEditor({kind:'campaign',target_id:null,fields:{}});
 $('new-creative').onclick = () => openEditor({kind:'creative',target_id:null,fields:{}});
 $('tab-drafts').onclick = () => switchSection('drafts');
