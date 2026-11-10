@@ -13,6 +13,8 @@ let user = null, catalog = null, generation = 0, appCheck, timer, ready = false,
 const fetchDrafts = httpsCallable(getFunctions(app, config.region), 'get_ad_drafts');
 const persistDraft = httpsCallable(getFunctions(app, config.region), 'save_ad_draft');
 const fetchReview = httpsCallable(getFunctions(app, config.region), 'review_ad_draft');
+const requestCampaignApproval = httpsCallable(getFunctions(app, config.region), 'approve_campaign');
+let campaignApprovalRequest = 0, campaignApprovalBusyTicket = null, campaignApprovalPanel = null;
 const requestCreativeActivation = httpsCallable(getFunctions(app, config.region), 'activate_creative');
 let activationRequest = 0, activationBusyTicket = null, activationPanel = null;
 const requestCreativeApproval = httpsCallable(getFunctions(app, config.region), 'approve_creative');
@@ -67,6 +69,7 @@ function authControls(busy) {
   for (const id of ['google','email','email-submit','email-retry']) $(id).disabled = !ready || busy;
 }
 function clearLibrary() {
+  ++campaignApprovalRequest; campaignApprovalBusyTicket = null; campaignApprovalPanel = null;
   ++activationRequest; activationBusyTicket = null; activationPanel = null;
   ++approvalRequest; approvalBusyTicket = null; approvalPanel = null;
   ++resumeRequest; resumeBusyTicket = null; resumePanel = null;
@@ -177,6 +180,7 @@ function display(key, value) {
   return String(value);
 }
 function detail(row) {
+  ++campaignApprovalRequest; campaignApprovalPanel = null;
   ++activationRequest; activationPanel = null;
   ++approvalRequest; approvalPanel = null;
   ++resumeRequest; resumePanel = null;
@@ -301,7 +305,73 @@ function detail(row) {
     };
     $('details').append(activate);
   }
+  if (section === 'campaigns' && row.approved === false && row.enabled === false) {
+    const approve = node('button','Review campaign approval','related'); approve.type = 'button';
+    approve.onclick = () => {
+      if (!user || !catalog || editor || campaignApprovalBusyTicket !== null) return;
+      if (campaignApprovalPanel) campaignApprovalPanel.remove();
+      campaignApprovalPanel = node('section',undefined,'note'); campaignApprovalPanel.setAttribute('aria-label','Campaign approval review');
+      $('details').append(campaignApprovalPanel); approveCampaign(row,campaignApprovalPanel);
+    };
+    $('details').append(approve);
+  }
   if (section === 'creatives') $('details').append(node('p','Weights control creative rotation within the selected campaign, not the campaign\u2019s exposure share.','muted'));
+}
+async function approveCampaign(row,panel,confirmation = null,preparedTicket = null,acknowledged = false) {
+  if (!user || !catalog || editor || campaignApprovalBusyTicket !== null ||
+      (confirmation && (!acknowledged || preparedTicket !== campaignApprovalRequest))) return;
+  const run = generation, uid = user.uid, currentCatalog = catalog, ticket = ++campaignApprovalRequest;
+  const active = () => generation === run && user?.uid === uid && catalog === currentCatalog && !editor &&
+    section === 'campaigns' && selected === row.id && campaignApprovalPanel === panel && ticket === campaignApprovalRequest && panel.isConnected;
+  campaignApprovalBusyTicket = ticket;
+  const status = node('p',confirmation ? 'Saving the confirmed campaign approval...' : 'Checking campaign settings and booking conflicts...');
+  status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); panel.replaceChildren(status);
+  try {
+    const data = (await requestCampaignApproval({action:confirmation ? 'approve' : 'prepare',target_id:row.id,
+      ...(confirmation ? {confirmation} : {})})).data;
+    if (!active()) return;
+    if (confirmation) {
+      if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
+          !/^[0-9a-f]{64}$/.test(data.history_id || '') || !/^[0-9a-f]{64}$/.test(data.settings_digest || '') ||
+          !Number.isFinite(Date.parse(data.approved_at))) throw Error('Invalid campaign approval receipt');
+      await load();
+      if (user?.uid === uid) notice('Campaign approved in the test project. Enabled remains No. Delivery requires separate activation and eligible allocation.');
+      return;
+    }
+    if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== false || data.enabled !== false ||
+        !/^[0-9a-f]{64}$/.test(data.confirmation || '') || !/^[0-9a-f]{64}$/.test(data.settings_digest || '') ||
+        data.campaign?.id !== row.id || !Array.isArray(data.warnings) || data.warnings.length > 500 ||
+        data.warnings.some(value => typeof value !== 'string' || value.length > 4000)) throw Error('Invalid campaign approval summary');
+    const campaign = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),
+      sponsors:[],campaigns:[data.campaign],creatives:[]}).campaigns[0];
+    if (campaign.approved !== false || campaign.enabled !== false) throw Error('Invalid campaign flags');
+    panel.replaceChildren(node('h3','Review campaign approval'),node('p',
+      'Only Approved changes from No to Yes. Enabled stays No. Review the exact sponsor, dates, platforms, targeting, exposure shares, and creative overrides. Nothing has been approved yet.'));
+    const list = node('dl');
+    for (const key of fields.campaigns) detailField(list,labels[key],reviewValue(key,campaign[key]),['share_schedule','creative_overrides'].includes(key));
+    panel.append(list);
+    if (data.warnings.length) {
+      panel.append(node('h4','Warnings'));
+      const warnings = node('ul'); for (const warning of data.warnings) warnings.append(node('li',warning)); panel.append(warnings);
+    }
+    panel.append(node('p','Approval does not enable delivery or reserve exposure. Publishing edits or restoring settings clears approval and disables the campaign. Confirmation rechecks the saved configuration.','muted'));
+    const check = node('input'); check.type = 'checkbox';
+    const label = node('label'); label.append(check,document.createTextNode(' I reviewed these campaign settings and approve this version.'));
+    const confirm = node('button','Confirm campaign approval'); confirm.type = 'button'; confirm.disabled = true;
+    check.onchange = () => { confirm.disabled = !check.checked; };
+    confirm.onclick = () => { if (check.checked) approveCampaign(row,panel,data.confirmation,ticket,true); };
+    panel.append(label,confirm);
+  } catch (error) {
+    if (!active()) return;
+    if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
+      clearLibrary(); notice('Staff campaign approval access could not be confirmed. Sign in with an approved account.',true); return;
+    }
+    panel.replaceChildren(node('p',confirmation ?
+      'Campaign approval could not be confirmed. Refresh the library and check Approved before retrying; the request may have completed. Changed settings require a new review.' :
+      'Campaign approval checks did not pass. Review sponsor status, dates, required settings, exposure conflicts, and the saved campaign. The campaign must be unapproved and disabled.'));
+  } finally {
+    if (campaignApprovalBusyTicket === ticket) campaignApprovalBusyTicket = null;
+  }
 }
 async function activateCreative(row,panel,confirmation = null,preparedTicket = null) {
   if (!user || !catalog || editor || activationBusyTicket !== null ||
@@ -555,7 +625,7 @@ async function rollbackCampaign(row,panel,action,historyId = null,confirmation =
           typeof entry.id !== 'string' || !entry.id || entry.id.length > 200 || entry.id.includes('/') ||
           !['publish','rollback'].includes(entry.action) || !Number.isFinite(Date.parse(entry.performed_at)) ||
           !Array.isArray(entry.fields) || entry.fields.some(key => !fields.campaigns.includes(key) || ['approved','enabled'].includes(key)))) throw Error('Invalid campaign history');
-      panel.replaceChildren(node('h3','Restore previous settings'),node('p','Choose a history entry to restore all editable settings to how they were immediately before that change. You will review the exact restoration first. Approval and Enabled will stay as they are.'));
+      panel.replaceChildren(node('h3','Restore previous settings'),node('p','Choose a history entry to restore all editable settings to how they were immediately before that change. You will review the exact restoration first. Confirming clears approval and disables the campaign.'));
       if (!data.entries.length) panel.append(node('p','No previous settings changes are available for this campaign.'));
       for (const entry of data.entries) {
         const item = node('div'); item.style.marginTop = '14px';
@@ -566,22 +636,24 @@ async function rollbackCampaign(row,panel,action,historyId = null,confirmation =
     } else if (action === 'prepare') {
       const review = validateReview(data.review,{id:'rollback-' + historyId,revision:1,kind:'campaign',target_id:row.id});
       if (data.source_history_id !== historyId || !review.checks_passed || !review.changes.length ||
-          !/^[0-9a-f]{64}$/.test(data.confirmation || '') || typeof data.preserved_flags?.approved !== 'boolean' ||
-          typeof data.preserved_flags?.enabled !== 'boolean') throw Error('Invalid restoration summary');
-      panel.replaceChildren(node('h3','Review restoration'),node('p','This will restore the settings listed below. It will not change Approval or Enabled. If the campaign is enabled and approved, restored settings can affect new ad selections.'));
+          !/^[0-9a-f]{64}$/.test(data.confirmation || '') || typeof data.current_flags?.approved !== 'boolean' ||
+          typeof data.current_flags?.enabled !== 'boolean' || data.approval_cleared !== true ||
+          data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false) throw Error('Invalid restoration summary');
+      panel.replaceChildren(node('h3','Review restoration'),node('p','This will restore the settings listed below. It clears Approval and sets Enabled to No. The restored version requires a new approval and separate activation before delivery.'));
       const list = node('dl');
       for (const change of review.changes) detailField(list,labels[change.field],
         'Current: ' + reviewValue(change.field,change.before) + '\nRestore: ' + reviewValue(change.field,change.after),['share_schedule','creative_overrides'].includes(change.field));
       panel.append(list);
       for (const issue of review.issues) panel.append(node('p','Warning: ' + issue.message));
-      panel.append(node('p','Values preserved: Approved: ' + display('approved',data.preserved_flags.approved) + ' | Enabled: ' + display('enabled',data.preserved_flags.enabled)));
+      panel.append(node('p','After restoration: Approved: No. Enabled: No. Previous approval is cleared.'));
       const restore = node('button','Confirm restoration','primary'); restore.type = 'button';
       restore.onclick = () => rollbackCampaign(row,panel,'rollback',historyId,data.confirmation,ticket); panel.append(restore);
     } else {
       if (data.source_history_id !== historyId || data.settings_restored !== true || !/^[0-9a-f]{64}$/.test(data.history_id || '') ||
-          !Number.isFinite(Date.parse(data.rolled_back_at))) throw Error('Invalid restoration receipt');
+          !Number.isFinite(Date.parse(data.rolled_back_at)) || data.approval_cleared !== true ||
+          data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false) throw Error('Invalid restoration receipt');
       await load();
-      if (user?.uid === uid) notice('Previous campaign settings restored in the test project. Approval and Enabled stayed unchanged.');
+      if (user?.uid === uid) notice('Previous campaign settings restored in the test project. Approval cleared. Enabled: No. Review and activation are required before delivery.');
     }
   } catch (error) {
     if (!active()) return;
@@ -1221,15 +1293,15 @@ async function campaignPublish(confirmation = null, preparedTicket = null) {
     const data = response.data;
     if (!confirmation) {
       const review = validateReview(data?.review,current);
-      const flags = current.kind === 'creative' ? data.current_flags : data.preserved_flags;
+      const flags = data.current_flags;
       if (data.environment !== 'test' || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
           !review.checks_passed || !review.changes.length || review.kind !== current.kind || !review.target_id ||
           typeof flags?.approved !== 'boolean' || typeof flags?.enabled !== 'boolean' ||
-          (current.kind === 'creative' && (data.approval_cleared !== true || data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false))) throw Error('Invalid publishing summary');
+          (data.approval_cleared !== true || data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false)) throw Error('Invalid publishing summary');
       showReview(review,true);
       $('draft-review').append(node('p',current.kind === 'creative' ?
         'After publication: Approved: No. Enabled: No. Existing approval is cleared. This creative stops serving until separately reviewed and activated.' :
-        'Values preserved: Approved: ' + display('approved',flags.approved) + ' \u00b7 Enabled: ' + display('enabled',flags.enabled)));
+        'After publication: Approved: No. Enabled: No. Existing approval is cleared. This campaign stops serving until separately reviewed and activated.'));
       const publish = node('button','Publish ' + current.kind + ' settings','primary'); publish.type = 'button';
       publish.onclick = () => campaignPublish(data.confirmation,ticket); $('draft-review').append(publish);
       $('draft-status').textContent = 'Check the exact changes and warnings above, then choose Publish ' + current.kind + ' settings to confirm.';
@@ -1237,11 +1309,11 @@ async function campaignPublish(confirmation = null, preparedTicket = null) {
       if (data?.environment !== 'test' || data.draft_id !== current.id || data.revision !== current.revision ||
           data.target_id !== current.target_id || data.settings_published !== true || typeof data.history_id !== 'string' ||
           !/^[0-9a-f]{64}$/.test(data.history_id) || !Number.isFinite(Date.parse(data.published_at)) ||
-          (current.kind === 'creative' && (data.approval_cleared !== true || data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false))) throw Error('Invalid publication receipt');
+          (data.approval_cleared !== true || data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false)) throw Error('Invalid publication receipt');
       await load();
       if (user?.uid === uid) notice(current.kind === 'creative' ?
         'Creative edits published in the test project. Approval cleared. Enabled: No. Review and activation are required before delivery.' :
-        'Campaign settings published in the test project. Approval and enabled values were preserved.');
+        'Campaign edits published in the test project. Approval cleared. Enabled: No. Review and activation are required before delivery.');
     }
   } catch (error) {
     if (!active()) return;
