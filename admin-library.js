@@ -535,9 +535,10 @@ async function resumeCampaign(row,panel,confirmation = null,preparedTicket = nul
     if (!active()) return;
     if (confirmation) {
       if (data?.environment !== 'test' || data.target_id !== row.id || data.resumed !== true || data.enabled !== true ||
-          data.approved !== true || !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.resumed_at))) throw Error('Invalid resume receipt');
+          data.approved !== true || data.approval_verified !== true || !/^[0-9a-f]{64}$/.test(data.settings_digest || '') ||
+          !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.resumed_at))) throw Error('Invalid resume receipt');
       await load();
-      if (user?.uid === uid) notice('Campaign enabled in the test project. Ad delivery follows its saved schedule and targeting.');
+      if (user?.uid === uid) notice('Campaign enabled in the test project after approval and private-media verification. Delivery follows its saved schedule and targeting.');
       return;
     }
     if (data?.environment !== 'test' || data.target_id !== row.id || data.enabled !== false || data.approved !== true ||
@@ -549,14 +550,40 @@ async function resumeCampaign(row,panel,confirmation = null,preparedTicket = nul
         !campaign.platforms.every(platform => Array.isArray(data.eligible_creatives[platform]) &&
           data.eligible_creatives[platform].length > 0 && data.eligible_creatives[platform].length <= 500 &&
           data.eligible_creatives[platform].every(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)))) throw Error('Invalid eligibility summary');
-    panel.replaceChildren(node('h3','Review campaign resume'),
+    if (data.approval_verified !== true || !/^[0-9a-f]{64}$/.test(data.campaign_approval?.settings_digest || '') ||
+        typeof data.campaign_approval?.approved_by !== 'string' || !data.campaign_approval.approved_by ||
+        data.campaign_approval.approved_by.length > 200 || !Number.isFinite(Date.parse(data.campaign_approval?.approved_at)) ||
+        !Array.isArray(data.verified_creatives) || data.verified_creatives.length > 500) throw Error('Missing verified approvals');
+    const expectedIds = new Set(campaign.platforms.flatMap(platform => data.eligible_creatives[platform]));
+    const verifiedIds = new Set();
+    for (const approved of data.verified_creatives) {
+      if (!approved || !expectedIds.has(approved.id) || verifiedIds.has(approved.id) ||
+          !/^[0-9a-f]{64}$/.test(approved.content_digest || '') || typeof approved.approved_by !== 'string' ||
+          !approved.approved_by || approved.approved_by.length > 200 || !Number.isFinite(Date.parse(approved.approved_at)) ||
+          !approved.media || !['image','poster,video'].includes(Object.keys(approved.media).sort().join(','))) throw Error('Invalid verified creative approval');
+      verifiedIds.add(approved.id);
+      for (const [slot,evidence] of Object.entries(approved.media)) {
+        if (!evidence || !/^published\/[0-9a-f]{64}$/.test(evidence.path || '') ||
+            !/^[0-9]{1,30}$/.test(evidence.generation || '') || !Number.isSafeInteger(evidence.size) || evidence.size <= 0 ||
+            evidence.size > (slot === 'video' ? 50 : 10)*1024*1024 || !/^[A-Za-z0-9+/]{6}==$/.test(evidence.crc32c || '') ||
+            !(slot === 'video' ? ['video/mp4'] : ['image/png','image/jpeg','image/webp']).includes(evidence.content_type)) throw Error('Invalid verified private media');
+      }
+    }
+    if (verifiedIds.size !== expectedIds.size) throw Error('Incomplete verified creative coverage');
+    panel.replaceChildren(node('h3','Review campaign activation or resume'),
       node('p','Only Enabled changes from No to Yes. Approval and all settings below stay unchanged. Nothing has resumed yet.'));
     const list = node('dl');
     for (const key of fields.campaigns) detailField(list,labels[key],reviewValue(key,campaign[key]));
     panel.append(list);
     for (const platform of campaign.platforms) panel.append(node('p',
       (platform === 'ios' ? 'iOS' : 'Android') + ' eligible creatives: ' + data.eligible_creatives[platform].map(id => name('creatives',id)).join(', ')));
-    panel.append(node('p','Approval, sponsor status, remaining dates, creative coverage, and booking conflicts were checked. Media playback is not verified by this check. Confirming rechecks the current settings.','muted'));
+    panel.append(node('p','Campaign settings match the approval recorded on ' + localTime(data.campaign_approval.approved_at) + '.','muted'));
+    for (const approved of data.verified_creatives) {
+      panel.append(node('p','Verified creative: ' + name('creatives',approved.id) + ' (approved ' + localTime(approved.approved_at) + ').'));
+      for (const [slot,evidence] of Object.entries(approved.media)) panel.append(node('p',
+        'Verified private ' + (slot === 'poster' ? 'video cover' : slot) + ' version: ' + evidence.generation,'muted'));
+    }
+    panel.append(node('p','Recorded campaign approval, each eligible creative approval, current private-media versions, sponsor status, dates, coverage, allocation, and booking conflicts were checked. This does not retest visual playback. Confirmation rechecks the current configuration.','muted'));
     const confirm = node('button','Confirm resume campaign'); confirm.type = 'button';
     confirm.onclick = () => resumeCampaign(row,panel,data.confirmation,ticket);
     panel.append(confirm);
@@ -567,7 +594,7 @@ async function resumeCampaign(row,panel,confirmation = null,preparedTicket = nul
     }
     panel.replaceChildren(node('p',confirmation ?
       'Resume could not be confirmed. Refresh the library and check Enabled before trying again; the request may have completed.' :
-      'Resume checks did not pass. Refresh the library and review approval, sponsor status, dates, creative coverage, and exposure shares.'));
+      'Activation or resume checks did not pass. Review recorded campaign and creative approvals, uploaded private media, sponsor status, dates, coverage, and positive exposure allocation. Older records without recorded approvals require review before resuming.'));
   } finally {
     if (resumeBusyTicket === ticket) resumeBusyTicket = null;
   }
