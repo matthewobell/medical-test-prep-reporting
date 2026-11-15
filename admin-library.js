@@ -54,11 +54,11 @@ const labels = { name:'Name', sponsor_id:'Sponsor', campaign_id:'Campaign', enab
   creative_overrides:'Exam/module creative overrides', rotation_weight:'Creative rotation weight', eyebrow_text:'Eyebrow text',
   headline:'Headline', body_text:'Body text', cta_text:'Button text', click_url:'Destination link', disclaimer_text:'Disclosure',
   media_type:'Media type', image_url:'Image link', video_url:'Video link', video_poster_image_url:'Video poster link',
-  video_muted_by_default:'Video muted by default' };
+  display_format:'Display format', video_muted_by_default:'Video muted by default' };
 const fields = {
   sponsors:['name','enabled','logo_url'],
   campaigns:['name','sponsor_id','approved','enabled','start_at','end_at','platforms','placement','exam','module','exclusive','share_schedule','creative_overrides'],
-  creatives:['name','campaign_id','approved','enabled','start_at','end_at','platforms','rotation_weight','eyebrow_text','headline','body_text','cta_text','click_url','disclaimer_text','media_type','image_url','video_url','video_poster_image_url','video_muted_by_default']
+  creatives:['name','campaign_id','approved','enabled','start_at','end_at','platforms','rotation_weight','eyebrow_text','headline','body_text','cta_text','click_url','disclaimer_text','display_format','media_type','image_url','video_url','video_poster_image_url','video_muted_by_default']
 };
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -105,7 +105,7 @@ function safeUrl(value) {
   catch { return false; }
 }
 function validateLibrary(data) {
-  if (!data || data.environment !== 'test' || !Number.isFinite(Date.parse(data.fetched_at))) throw Error('Invalid library');
+  if (!data || data.environment !== config.environment || !Number.isFinite(Date.parse(data.fetched_at))) throw Error('Invalid library');
   for (const type of Object.keys(fields)) {
     if (!Array.isArray(data[type]) || data[type].length > 500) throw Error('Invalid library');
     const seen = new Set();
@@ -137,7 +137,7 @@ function localTime(value) {
   return date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}) + ' at ' +
     date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}).replace(/\s+([AP]M)/,'$1');
 }
-function selectionKey() { return 'campaign-library-selection-v1:' + user.uid; }
+function selectionKey() { return 'campaign-library-selection-v1:' + (config.environment === 'test' ? '' : config.environment + ':') + user.uid; }
 function restoreSelection() {
   remembered = {}; section = 'campaigns'; selected = null;
   try {
@@ -178,6 +178,7 @@ function detailField(list,title,value,wide = false) {
   field.append(node('dt',title),node('dd',value)); list.append(field); return field;
 }
 function display(key, value) {
+  if (key === 'display_format') return value === 'fullscreen' ? 'Fullscreen' : 'Square';
   if (value == null) return 'Not set';
   if (['start_at','end_at'].includes(key)) {
     const when = new Date(value);
@@ -206,7 +207,7 @@ function detail(row) {
     ['Overview',['name','campaign_id','approved','enabled','rotation_weight']],
     ['Schedule',['start_at','end_at']],['Targeting',['platforms']],
     ['Content',['eyebrow_text','headline','body_text','cta_text','click_url','disclaimer_text']],
-    ['Media',['media_type','image_url','video_url','video_poster_image_url','video_muted_by_default']]
+    ['Media',['display_format','media_type','image_url','video_url','video_poster_image_url','video_muted_by_default']]
   ] : [['Overview',fields[section]]];
   if (!groups.some(([title]) => title === detailTab)) detailTab = 'Overview';
   const panes = [], buttons = [], nav = node('nav',undefined,'detail-tabs');
@@ -245,7 +246,7 @@ function detail(row) {
   }
   if (section === 'creatives' && title === 'Media') {
     for (const [slot,key,label] of [['image','image_url','image'],['video','video_url','video'],['poster','video_poster_image_url','cover']]) {
-      if (!row[key]?.startsWith('https://storage.googleapis.com/medical-test-prep-ads-test-published-media/published/')) continue;
+      if (!row[key]?.startsWith(config.publishedMediaPrefix + 'published/')) continue;
       const field = node('div',undefined,'detail-field wide');
       const button = node('button','Preview published ' + label); button.type = 'button';
       const status = node('p',undefined,'muted'); status.setAttribute('role','status');
@@ -357,18 +358,18 @@ async function approveCampaign(row,panel,confirmation = null,preparedTicket = nu
       ...(confirmation ? {confirmation} : {})})).data;
     if (!active()) return;
     if (confirmation) {
-      if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
+      if (data?.environment !== config.environment || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
           !/^[0-9a-f]{64}$/.test(data.history_id || '') || !/^[0-9a-f]{64}$/.test(data.settings_digest || '') ||
           !Number.isFinite(Date.parse(data.approved_at))) throw Error('Invalid campaign approval receipt');
       await load();
-      if (user?.uid === uid) notice('Campaign approved in the test project. Enabled remains No. Delivery requires separate activation and eligible allocation.');
+      if (user?.uid === uid) notice('Campaign approved in the ' + config.projectLabel + '. Enabled remains No. Delivery requires separate activation and eligible allocation.');
       return;
     }
-    if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== false || data.enabled !== false ||
+    if (data?.environment !== config.environment || data.target_id !== row.id || data.approved !== false || data.enabled !== false ||
         !/^[0-9a-f]{64}$/.test(data.confirmation || '') || !/^[0-9a-f]{64}$/.test(data.settings_digest || '') ||
         data.campaign?.id !== row.id || !Array.isArray(data.warnings) || data.warnings.length > 500 ||
         data.warnings.some(value => typeof value !== 'string' || value.length > 4000)) throw Error('Invalid campaign approval summary');
-    const campaign = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),
+    const campaign = validateLibrary({environment:config.environment,fetched_at:new Date().toISOString(),
       sponsors:[],campaigns:[data.campaign],creatives:[]}).campaigns[0];
     if (campaign.approved !== false || campaign.enabled !== false) throw Error('Invalid campaign flags');
     panel.replaceChildren(node('h3','Review campaign approval'),node('p',
@@ -413,20 +414,20 @@ async function activateCreative(row,panel,confirmation = null,preparedTicket = n
       ...(confirmation ? {confirmation} : {})})).data;
     if (!active()) return;
     if (confirmation) {
-      if (data?.environment !== 'test' || data.target_id !== row.id || data.activated !== true || data.approved !== true || data.enabled !== true ||
+      if (data?.environment !== config.environment || data.target_id !== row.id || data.activated !== true || data.approved !== true || data.enabled !== true ||
           !/^[0-9a-f]{64}$/.test(data.history_id || '') || !/^[0-9a-f]{64}$/.test(data.content_digest || '') ||
           !Number.isFinite(Date.parse(data.activated_at))) throw Error('Invalid activation receipt');
       await load();
-      if (user?.uid === uid) notice('Creative enabled in the test project. Approval preserved. Delivery still requires an active campaign and eligible schedule.');
+      if (user?.uid === uid) notice('Creative enabled in the ' + config.projectLabel + '. Approval preserved. Delivery still requires an active campaign and eligible schedule.');
       return;
     }
-    if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
+    if (data?.environment !== config.environment || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
         !/^[0-9a-f]{64}$/.test(data.confirmation || '') || data.creative?.id !== row.id ||
         !/^[0-9a-f]{64}$/.test(data.approval?.content_digest || '') ||
         typeof data.approval?.approved_by !== 'string' || !data.approval.approved_by || data.approval.approved_by.length > 200 ||
         !Number.isFinite(Date.parse(data.approval?.approved_at)) || !Array.isArray(data.warnings) ||
         data.warnings.length > 500 || data.warnings.some(value => typeof value !== 'string' || value.length > 4000)) throw Error('Invalid activation summary');
-    const checked = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),
+    const checked = validateLibrary({environment:config.environment,fetched_at:new Date().toISOString(),
       sponsors:[],campaigns:[data.campaign],creatives:[data.creative]});
     const creative = checked.creatives[0], campaign = checked.campaigns[0];
     if (creative.approved !== true || creative.enabled !== false || creative.campaign_id !== campaign.id ||
@@ -436,7 +437,7 @@ async function activateCreative(row,panel,confirmation = null,preparedTicket = n
     for (const [slot,key] of Object.entries(slots)) {
       const evidence = data.approval.media[slot];
       if (!evidence || !/^published\/[0-9a-f]{64}$/.test(evidence.path || '') ||
-          creative[key] !== 'https://storage.googleapis.com/medical-test-prep-ads-test-published-media/' + evidence.path ||
+          creative[key] !== config.publishedMediaPrefix + evidence.path ||
           !/^[0-9]{1,30}$/.test(evidence.generation || '') || !Number.isSafeInteger(evidence.size) || evidence.size <= 0 ||
           evidence.size > (slot === 'video' ? 50 : 10)*1024*1024 || !/^[A-Za-z0-9+/]{6}==$/.test(evidence.crc32c || '') ||
           !(slot === 'video' ? ['video/mp4'] : ['image/png','image/jpeg','image/webp']).includes(evidence.content_type)) throw Error('Invalid approved media');
@@ -485,17 +486,17 @@ async function approveCreative(row,panel,confirmation = null,preparedTicket = nu
       ...(confirmation ? {confirmation} : {})})).data;
     if (!active()) return;
     if (confirmation) {
-      if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
+      if (data?.environment !== config.environment || data.target_id !== row.id || data.approved !== true || data.enabled !== false ||
           !/^[0-9a-f]{64}$/.test(data.history_id || '') || !/^[0-9a-f]{64}$/.test(data.content_digest || '') ||
           !Number.isFinite(Date.parse(data.approved_at))) throw Error('Invalid approval receipt');
       await load();
-      if (user?.uid === uid) notice('Creative approved in the test project. Enabled remains No. It will not serve until separately activated.');
+      if (user?.uid === uid) notice('Creative approved in the ' + config.projectLabel + '. Enabled remains No. It will not serve until separately activated.');
       return;
     }
-    if (data?.environment !== 'test' || data.target_id !== row.id || data.approved !== false || data.enabled !== false ||
+    if (data?.environment !== config.environment || data.target_id !== row.id || data.approved !== false || data.enabled !== false ||
         !/^[0-9a-f]{64}$/.test(data.confirmation || '') || !/^[0-9a-f]{64}$/.test(data.content_digest || '') ||
         data.creative?.id !== row.id) throw Error('Invalid approval summary');
-    const creative = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),
+    const creative = validateLibrary({environment:config.environment,fetched_at:new Date().toISOString(),
       sponsors:[],campaigns:[],creatives:[data.creative]}).creatives[0];
     if (creative.approved !== false || creative.enabled !== false || !['image','video'].includes(creative.media_type)) throw Error('Invalid creative');
     const slots = creative.media_type === 'image' ? {image:'image_url'} : {video:'video_url',poster:'video_poster_image_url'};
@@ -504,7 +505,7 @@ async function approveCreative(row,panel,confirmation = null,preparedTicket = nu
     for (const [slot,key] of Object.entries(slots)) {
       const evidence = data.media[slot];
       if (!evidence || !/^published\/[0-9a-f]{64}$/.test(evidence.path || '') ||
-          creative[key] !== 'https://storage.googleapis.com/medical-test-prep-ads-test-published-media/' + evidence.path ||
+          creative[key] !== config.publishedMediaPrefix + evidence.path ||
           !/^[0-9]{1,30}$/.test(evidence.generation || '') || !Number.isSafeInteger(evidence.size) || evidence.size <= 0 ||
           evidence.size > (slot === 'video' ? 50 : 10)*1024*1024 || !/^[A-Za-z0-9+/]{6}==$/.test(evidence.crc32c || '') ||
           !(slot === 'video' ? ['video/mp4'] : ['image/png','image/jpeg','image/webp']).includes(evidence.content_type)) throw Error('Invalid private media');
@@ -560,16 +561,16 @@ async function resumeCampaign(row,panel,confirmation = null,preparedTicket = nul
       ...(confirmation ? {confirmation} : {})})).data;
     if (!active()) return;
     if (confirmation) {
-      if (data?.environment !== 'test' || data.target_id !== row.id || data.resumed !== true || data.enabled !== true ||
+      if (data?.environment !== config.environment || data.target_id !== row.id || data.resumed !== true || data.enabled !== true ||
           data.approved !== true || data.approval_verified !== true || !/^[0-9a-f]{64}$/.test(data.settings_digest || '') ||
           !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.resumed_at))) throw Error('Invalid resume receipt');
       await load();
-      if (user?.uid === uid) notice('Campaign enabled in the test project after approval and private-media verification. Delivery follows its saved schedule and targeting.');
+      if (user?.uid === uid) notice('Campaign enabled in the ' + config.projectLabel + ' after approval and private-media verification. Delivery follows its saved schedule and targeting.');
       return;
     }
-    if (data?.environment !== 'test' || data.target_id !== row.id || data.enabled !== false || data.approved !== true ||
+    if (data?.environment !== config.environment || data.target_id !== row.id || data.enabled !== false || data.approved !== true ||
         !/^[0-9a-f]{64}$/.test(data.confirmation || '') || !data.campaign || data.campaign.id !== row.id) throw Error('Invalid resume summary');
-    const campaign = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),
+    const campaign = validateLibrary({environment:config.environment,fetched_at:new Date().toISOString(),
       sponsors:[],campaigns:[data.campaign],creatives:[]}).campaigns[0];
     if (campaign.enabled !== false || campaign.approved !== true || !campaign.platforms?.length ||
         !data.eligible_creatives || Object.keys(data.eligible_creatives).length !== campaign.platforms.length ||
@@ -635,7 +636,7 @@ async function pauseCampaign(row,button) {
   try {
     const summary = (await requestCampaignPause({action:'prepare',target_id:row.id})).data;
     if (!active() || section !== 'campaigns' || selected !== row.id) return;
-    if (summary?.environment !== 'test' || summary.target_id !== row.id || summary.enabled !== true ||
+    if (summary?.environment !== config.environment || summary.target_id !== row.id || summary.enabled !== true ||
         typeof summary.name !== 'string' || !summary.name || summary.name.length > 200 ||
         !/^[0-9a-f]{64}$/.test(summary.confirmation || '')) throw Error('Invalid pause summary');
     if (!window.confirm('Pause \u201c' + summary.name + '\u201d?\n\nThis stops new ad selections for this campaign. Ads already displayed may finish. Approval, dates, targeting, and exposure share stay unchanged.')) return;
@@ -643,10 +644,10 @@ async function pauseCampaign(row,button) {
     sent = true;
     const receipt = (await requestCampaignPause({action:'pause',target_id:row.id,confirmation:summary.confirmation})).data;
     if (!active()) return;
-    if (receipt?.environment !== 'test' || receipt.target_id !== row.id || receipt.paused !== true || receipt.enabled !== false ||
+    if (receipt?.environment !== config.environment || receipt.target_id !== row.id || receipt.paused !== true || receipt.enabled !== false ||
         !/^[0-9a-f]{64}$/.test(receipt.history_id || '') || !Number.isFinite(Date.parse(receipt.paused_at))) throw Error('Invalid pause receipt');
     await load();
-    if (user?.uid === uid) notice('Campaign paused in the test project. New ad selections for it are stopped.');
+    if (user?.uid === uid) notice('Campaign paused in the ' + config.projectLabel + '. New ad selections for it are stopped.');
   } catch (error) {
     if (!active()) return;
     if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
@@ -678,7 +679,7 @@ async function sponsorStatus(row,panel,action,prepared = null,preparedTicket = n
     if (!active()) return;
     if (prepared) {
       const enabled = action === 'activate';
-      if (data?.environment !== 'test' || data.target_id !== row.id || data.enabled !== enabled ||
+      if (data?.environment !== config.environment || data.target_id !== row.id || data.enabled !== enabled ||
           data[enabled ? 'activated' : 'paused'] !== true || data[enabled ? 'activated_by' : 'paused_by'] !== uid ||
           !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data[enabled ? 'activated_at' : 'paused_at']))) throw Error('Invalid sponsor status receipt');
       if (enabled && (data.approval_verified !== true || !Array.isArray(data.potential_campaign_ids) ||
@@ -688,17 +689,17 @@ async function sponsorStatus(row,panel,action,prepared = null,preparedTicket = n
       section = 'sponsors'; selected = row.id; remembered.sponsors = row.id;
       $('sponsor-filter').value = 'all'; $('campaign-filter').value = 'all'; $('record-status').value = 'all'; $('library-search').value = '';
       rememberSelection(); render();
-      const result = node('p',enabled ? 'Sponsor activated in the test project. Campaign and creative settings were preserved.' :
-        'Sponsor paused in the test project. New ad selections across its campaigns are stopped; campaign and creative settings were preserved.');
+      const result = node('p',enabled ? 'Sponsor activated in the ' + config.projectLabel + '. Campaign and creative settings were preserved.' :
+        'Sponsor paused in the ' + config.projectLabel + '. New ad selections across its campaigns are stopped; campaign and creative settings were preserved.');
       result.setAttribute('role','status'); $('details').append(result); return;
     }
-    if (data?.environment !== 'test' || data.target_id !== row.id || data.enabled !== (action === 'pause') ||
+    if (data?.environment !== config.environment || data.target_id !== row.id || data.enabled !== (action === 'pause') ||
         !/^[0-9a-f]{64}$/.test(data.confirmation || '')) throw Error('Invalid sponsor review');
     let sponsor, linked = [], campaignIds = [];
     if (action === 'activate') {
       if (data.approval_verified !== true || !Array.isArray(data.linked_campaigns) || data.linked_campaigns.length > 500 ||
           !Array.isArray(data.warnings) || data.warnings.length > 10 || data.warnings.some(v => typeof v !== 'string' || v.length > 1000)) throw Error('Invalid activation review');
-      const checked = validateLibrary({environment:'test',fetched_at:new Date().toISOString(),sponsors:[data.sponsor],campaigns:data.linked_campaigns,creatives:[]});
+      const checked = validateLibrary({environment:config.environment,fetched_at:new Date().toISOString(),sponsors:[data.sponsor],campaigns:data.linked_campaigns,creatives:[]});
       sponsor = checked.sponsors[0]; linked = data.linked_campaigns;
       if (sponsor.id !== row.id || sponsor.enabled !== false || sponsor.name !== row.name || sponsor.logo_url !== row.logo_url ||
           new Set(linked.map(c => c.id)).size !== linked.length || linked.some(c => c.sponsor_id !== row.id || typeof c.may_deliver !== 'boolean' || typeof c.scheduled_for_later !== 'boolean')) throw Error('Mismatched sponsor review');
@@ -809,23 +810,23 @@ async function createSponsor(confirming = false) {
       ...(confirming ? {confirmation:prepared.confirmation} : {})})).data;
     if (!active()) return;
     if (confirming) {
-      if (data?.environment !== 'test' || data.target_id !== prepared.target_id || data.created !== true || data.enabled !== false ||
+      if (data?.environment !== config.environment || data.target_id !== prepared.target_id || data.created !== true || data.enabled !== false ||
           data.created_by !== uid || !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.created_at))) throw Error('Invalid creation receipt');
       await load();
       if (user?.uid !== uid || generation !== run + 1 || !catalog) return;
       section = 'sponsors'; selected = data.target_id; remembered.sponsors = data.target_id;
       $('sponsor-filter').value = 'all'; $('campaign-filter').value = 'all'; $('record-status').value = 'all'; $('library-search').value = '';
-      rememberSelection(); render(); notice('Sponsor created in the test project. Enabled: No. No campaigns or reporting access were created.');
+      rememberSelection(); render(); notice('Sponsor created in the ' + config.projectLabel + '. Enabled: No. No campaigns or reporting access were created.');
       return;
     }
-    if (data?.environment !== 'test' || data.enabled !== false || !/^sponsor-[0-9a-f]{64}$/.test(data.new_target_id || '') ||
+    if (data?.environment !== config.environment || data.enabled !== false || !/^sponsor-[0-9a-f]{64}$/.test(data.new_target_id || '') ||
         !/^[0-9a-f]{64}$/.test(data.confirmation || '') || data.sponsor?.enabled !== false ||
         data.sponsor.name !== values.name || data.sponsor.logo_url !== values.logo_url ||
         !Array.isArray(data.warnings) || data.warnings.length > 10 || data.warnings.some(v => typeof v !== 'string' || v.length > 1000)) throw Error('Invalid sponsor summary');
     current.prepared = {fields:values,confirmation:data.confirmation,target_id:data.new_target_id};
     const panel = $('sponsor-create-summary'); panel.replaceChildren(node('h3','Review new sponsor'),
       node('p','Name: ' + values.name),node('p','Logo link: ' + values.logo_url),node('p','Enabled: No'),
-      node('p','This creates a sponsor in the test project. It creates no campaigns and grants no reporting access. Logo availability and appearance are not verified.'));
+      node('p','This creates a sponsor in the ' + config.projectLabel + '. It creates no campaigns and grants no reporting access. Logo availability and appearance are not verified.'));
     for (const warning of data.warnings) panel.append(node('p',warning));
     const confirm = node('button','Confirm sponsor creation'); confirm.type = 'button';
     confirm.onclick = () => { if (active() && current.prepared) createSponsor(true); };
@@ -855,7 +856,7 @@ async function pauseCreative(row,button) {
   try {
     const summary = (await requestCreativePause({action:'prepare',target_id:row.id})).data;
     if (!active() || section !== 'creatives' || selected !== row.id) return;
-    if (summary?.environment !== 'test' || summary.target_id !== row.id || summary.enabled !== true ||
+    if (summary?.environment !== config.environment || summary.target_id !== row.id || summary.enabled !== true ||
         typeof summary.name !== 'string' || !summary.name || summary.name.length > 200 ||
         !/^[0-9a-f]{64}$/.test(summary.confirmation || '')) throw Error('Invalid pause summary');
     if (!window.confirm('Pause \u201c' + summary.name + '\u201d?\n\nThis stops new ad selections for this creative. Ads already displayed may finish. Approval, content, media, and parent campaign settings stay unchanged. Other eligible ads may continue. If none remain, delivery may fall back or skip.')) return;
@@ -864,10 +865,10 @@ async function pauseCreative(row,button) {
     sent = true;
     const receipt = (await requestCreativePause({action:'pause',target_id:row.id,confirmation:summary.confirmation})).data;
     if (!active()) return;
-    if (receipt?.environment !== 'test' || receipt.target_id !== row.id || receipt.paused !== true || receipt.enabled !== false ||
+    if (receipt?.environment !== config.environment || receipt.target_id !== row.id || receipt.paused !== true || receipt.enabled !== false ||
         !/^[0-9a-f]{64}$/.test(receipt.history_id || '') || !Number.isFinite(Date.parse(receipt.paused_at))) throw Error('Invalid pause receipt');
     await load();
-    if (user?.uid === uid) notice('Creative paused in the test project. New ad selections for it are stopped.');
+    if (user?.uid === uid) notice('Creative paused in the ' + config.projectLabel + '. New ad selections for it are stopped.');
   } catch (error) {
     if (!active()) return;
     if (error?.code?.includes('permission-denied') || error?.code?.includes('unauthenticated')) {
@@ -893,7 +894,7 @@ async function rollbackCampaign(row,panel,action,historyId = null,confirmation =
     const data = (await requestCampaignRollback({action,target_id:row.id,
       ...(historyId ? {history_id:historyId} : {}),...(confirmation ? {confirmation} : {})})).data;
     if (!active()) return;
-    if (data?.environment !== 'test' || data.target_id !== row.id) throw Error('Invalid restoration response');
+    if (data?.environment !== config.environment || data.target_id !== row.id) throw Error('Invalid restoration response');
     if (action === 'list') {
       if (!Array.isArray(data.entries) || data.entries.length > 100 || data.entries.some(entry =>
           typeof entry.id !== 'string' || !entry.id || entry.id.length > 200 || entry.id.includes('/') ||
@@ -927,7 +928,7 @@ async function rollbackCampaign(row,panel,action,historyId = null,confirmation =
           !Number.isFinite(Date.parse(data.rolled_back_at)) || data.approval_cleared !== true ||
           data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false) throw Error('Invalid restoration receipt');
       await load();
-      if (user?.uid === uid) notice('Previous campaign settings restored in the test project. Approval cleared. Enabled: No. Review and activation are required before delivery.');
+      if (user?.uid === uid) notice('Previous campaign settings restored in the ' + config.projectLabel + '. Approval cleared. Enabled: No. Review and activation are required before delivery.');
     }
   } catch (error) {
     if (!active()) return;
@@ -954,7 +955,7 @@ async function publishedMediaPreview(row,slot,button,status,stage) {
     if (!active()) return;
     const data = response.data, url = new URL(data?.url);
     const original = row[slot === 'image' ? 'image_url' : slot === 'video' ? 'video_url' : 'video_poster_image_url'];
-    if (data.environment !== 'test' || data.creative_id !== row.id || data.slot !== slot ||
+    if (data.environment !== config.environment || data.creative_id !== row.id || data.slot !== slot ||
         data.is_preview !== true || data.display_recorded !== false || !safeUrl(url.href) ||
         url.origin + url.pathname !== original || !url.searchParams.has('X-Goog-Signature') ||
         !Number.isFinite(Date.parse(data.expires_at)) || Date.parse(data.expires_at) <= Date.now()) throw Error('Invalid preview');
@@ -1030,7 +1031,7 @@ function render() {
   const currentRow = chooseRow(rows);
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed',String(section === type));
   $('campaign-filter').disabled = section === 'sponsors';
-  $('summary').textContent = rows.length + ' ' + section + ' \u00b7 ' + catalog.sponsors.length + ' sponsors, ' + catalog.campaigns.length + ' campaigns, ' + catalog.creatives.length + ' creatives in this test catalog';
+  $('summary').textContent = rows.length + ' ' + section + ' \u00b7 ' + catalog.sponsors.length + ' sponsors, ' + catalog.campaigns.length + ' campaigns, ' + catalog.creatives.length + ' creatives in this ' + config.catalogLabel;
   renderTable(rows);
   if (currentRow) detail(currentRow); else $('details').replaceChildren(node('p','No records match these filters.','empty'));
 }
@@ -1040,7 +1041,6 @@ async function load() {
   clearLibrary(); $('auth-panel').hidden = true; $('loading').hidden = false; $('refresh').disabled = true;
   clearTimeout(timer); $('notice').hidden = true;
   try {
-    if (config.environment !== 'test' || config.firebase.projectId !== 'medical-test-prep-ads-test') throw Error('Wrong project');
     appCheck ||= initializeAppCheck(app,{provider:new ReCaptchaEnterpriseProvider(config.siteKey),isTokenAutoRefreshEnabled:true});
     const [response, draftResponse] = await Promise.all([fetchLibrary({}), fetchDrafts({draft_id:null})]);
     if (run !== generation || user?.uid !== uid) return;
@@ -1058,7 +1058,7 @@ async function load() {
   } finally { if (run === generation) $('refresh').disabled = false; }
 }
 function validDraft(value, full = false) {
-  if (!value || value.environment !== 'test' || value.status !== 'draft' || !['campaign','creative'].includes(value.kind) ||
+  if (!value || value.environment !== config.environment || value.status !== 'draft' || !['campaign','creative'].includes(value.kind) ||
       typeof value.id !== 'string' || !value.id || value.id.includes('/') || value.id.length > 200 ||
       !Number.isSafeInteger(value.revision) || value.revision < 1 ||
       (value.target_id !== null && (typeof value.target_id !== 'string' || !value.target_id || value.target_id.includes('/'))) ||
@@ -1071,13 +1071,13 @@ function validDraft(value, full = false) {
     const assets = value.fields.media_assets;
     if (assets !== undefined && (!assets || typeof assets !== 'object' || Array.isArray(assets) || Object.keys(assets).some(key => !['image','video','poster'].includes(key)) || Object.values(assets).some(id => typeof id !== 'string' || !id || id.length > 200 || id.includes('/')))) throw Error('Invalid media references');
     // Reuse the library field checks before putting any stored values into controls.
-    validateLibrary({environment:'test',fetched_at:value.updated_at,sponsors:[],campaigns:[],creatives:[],
+    validateLibrary({environment:config.environment,fetched_at:value.updated_at,sponsors:[],campaigns:[],creatives:[],
       [type]:[{id:value.id,...value.fields}]});
   }
   return value;
 }
 function validateDraftList(data) {
-  if (data?.environment !== 'test' || !Array.isArray(data.drafts) || data.drafts.length > 500) throw Error('Invalid draft list');
+  if (data?.environment !== config.environment || !Array.isArray(data.drafts) || data.drafts.length > 500) throw Error('Invalid draft list');
   const ids = new Set();
   for (const draft of data.drafts) { validDraft(draft); if (ids.has(draft.id)) throw Error('Duplicate draft'); ids.add(draft.id); }
   return data.drafts;
@@ -1113,7 +1113,7 @@ async function readDraft(id, button) {
   try {
     const response = await fetchDrafts({draft_id:id});
     if (run !== generation || user?.uid !== uid || ticket !== draftRequest) return;
-    if (response.data?.environment !== 'test') throw Error('Invalid draft response');
+    if (response.data?.environment !== config.environment) throw Error('Invalid draft response');
     const draft = validDraft(response.data.draft,true);
     if (draft.id !== id) throw Error('Unexpected draft');
     openEditor(draft);
@@ -1154,6 +1154,11 @@ function editField(parent, key, value, choices = null) {
       const wrap = node('label'); wrap.append(input,document.createTextNode(text)); control.append(wrap); return input;
     });
     read = () => inputs.filter(input => input.checked).map(input => input.value);
+  } else if (key === 'display_format') {
+    control = node('select');
+    control.append(new Option('Square','square'),new Option('Fullscreen','fullscreen'));
+    control.value = value ?? 'square';
+    read = () => value == null && control.value === 'square' ? null : control.value;
   } else if (choices || ['exclusive','video_muted_by_default','media_type'].includes(key)) {
     control = node('select'); control.append(new Option('Not set',''));
     const options = choices || (key === 'media_type' ? [['image','Image'],['video','Video']] : [['true','Yes'],['false','No']]);
@@ -1229,7 +1234,7 @@ function openEditor(draft) {
     grid.append(node('p','Rotation weight applies within a campaign, not to its exposure share.','wide field-help'));
     for (const [title,subtitle,keys] of [
       ['Copy','Headline, body, button and link',['eyebrow_text','headline','body_text','disclaimer_text','cta_text','click_url']],
-      ['Media links','Type, links and mute setting',['media_type','video_muted_by_default','image_url','video_url','video_poster_image_url']]
+      ['Media links','Format, type, links and mute setting',['display_format','media_type','video_muted_by_default','image_url','video_url','video_poster_image_url']]
     ]) {
       const panel = disclosure(title,subtitle,keys.length + ' fields');
       const content = node('div',undefined,'field-grid'); panel.append(content); root.append(panel);
@@ -1334,7 +1339,7 @@ async function uploadMedia(slot,input,status,progress) {
     const prepared = await prepareUpload({draft_id:current.id,slot,name:file.name,size:file.size,content_type:file.type});
     if (!active()) return;
     const data = prepared.data, url = new URL(data.upload_url);
-    if (data.environment !== 'test' || !data.asset?.id || data.asset.slot !== slot || url.protocol !== 'https:' || url.hostname !== 'storage.googleapis.com' || url.username || url.password) throw Error('Invalid upload response');
+    if (data.environment !== config.environment || !data.asset?.id || data.asset.slot !== slot || url.protocol !== 'https:' || url.hostname !== 'storage.googleapis.com' || url.username || url.password) throw Error('Invalid upload response');
     status.textContent = 'Uploading ' + file.name + '\u2026';
     await new Promise((resolve,reject) => {
       const request = new XMLHttpRequest(); uploadTask = request;
@@ -1349,7 +1354,7 @@ async function uploadMedia(slot,input,status,progress) {
     const completed = await completeUpload({asset_id:data.asset.id});
     if (!active()) return;
     const result = completed.data;
-    if (result.environment !== 'test' || result.asset?.status !== 'ready' || result.asset.id !== data.asset.id || result.asset.slot !== slot) throw Error('Invalid completion');
+    if (result.environment !== config.environment || result.asset?.status !== 'ready' || result.asset.id !== data.asset.id || result.asset.slot !== slot) throw Error('Invalid completion');
     current.fields.media_assets[slot] = result.asset.id; dirty = true; invalidateReview();
     status.textContent = 'Upload checked. Click Save draft to attach this file, then reopen its preview.';
     progress.value = 100;
@@ -1372,7 +1377,7 @@ async function previewMedia(slot,button,status,player) {
   try {
     const [token, attestation] = await Promise.all([user.getIdToken(), getToken(appCheck)]);
     if (!active()) return;
-    const url = new URL('https://us-central1-medical-test-prep-ads-test.cloudfunctions.net/preview_ad_asset');
+    const url = new URL(config.draftPreviewUrl);
     url.searchParams.set('draft_id',current.id); url.searchParams.set('slot',slot);
     const response = await fetch(url,{headers:{Authorization:'Bearer ' + token,'X-Firebase-AppCheck':attestation.token},cache:'no-store',credentials:'omit',referrerPolicy:'no-referrer'});
     if (!active()) return;
@@ -1397,7 +1402,7 @@ function invalidateReview() {
   $('draft-review').replaceChildren(); $('draft-review').hidden = true;
 }
 function validateReview(data, draft) {
-  if (!data || data.environment !== 'test' || data.activation_performed !== false || data.draft_id !== draft.id ||
+  if (!data || data.environment !== config.environment || data.activation_performed !== false || data.draft_id !== draft.id ||
       data.revision !== draft.revision || data.kind !== draft.kind || data.target_id !== draft.target_id ||
       typeof data.checks_passed !== 'boolean' || !Number.isFinite(Date.parse(data.reviewed_at)) ||
       typeof data.basis !== 'string' || data.basis.length > 2000 || !Array.isArray(data.issues) || data.issues.length > 500 ||
@@ -1434,7 +1439,7 @@ function showReview(data, finalSummary = false) {
   const box = $('draft-review'); box.replaceChildren(); box.hidden = false;
   const heading = node('h2',data.checks_passed ? 'No blocking issues found' : 'Draft needs attention'); heading.tabIndex = -1;
   box.append(heading,node('p','Saved revision ' + data.revision + ' \u00b7 Draft ID: ' + data.draft_id + ' \u00b7 Reviewed ' + localTime(data.reviewed_at),'muted'),
-    node('p',finalSummary ? (['campaign','creative'].includes(data.kind) && data.target_id === null ? 'Final creation summary. Confirm below to create an unapproved, disabled ' + data.kind + ' in the test project.' : 'Final publishing summary. Confirm below to update ' + data.kind + ' settings used for ad delivery in the test project.') : 'Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
+    node('p',finalSummary ? (['campaign','creative'].includes(data.kind) && data.target_id === null ? 'Final creation summary. Confirm below to create an unapproved, disabled ' + data.kind + ' in the ' + config.projectLabel + '.' : 'Final publishing summary. Confirm below to update ' + data.kind + ' settings used for ad delivery in the ' + config.projectLabel + '.') : 'Review only. No ad was approved, published, or activated.'),node('p',data.basis,'muted'));
   for (const severity of ['error','warning']) {
     const items = data.issues.filter(issue => issue.severity === severity);
     if (!items.length) continue;
@@ -1476,21 +1481,21 @@ async function createCampaign(confirmation = null, preparedTicket = null) {
     if (!active()) return;
     if (!confirmation) {
       const review = validateReview(data?.review,current);
-      if (data.environment !== 'test' || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
+      if (data.environment !== config.environment || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
           !/^campaign-[0-9a-f]{64}$/.test(data.new_target_id || '') || data.approved !== false || data.enabled !== false ||
           !review.checks_passed || !review.changes.length || review.kind !== 'campaign' || review.target_id !== null) throw Error('Invalid creation summary');
       showReview(review,true);
-      $('draft-review').append(node('p','Creates a new campaign in the test project with Approved: No and Enabled: No. It will not serve ads. Approval and activation require separate actions.'),
+      $('draft-review').append(node('p','Creates a new campaign in the ' + config.projectLabel + ' with Approved: No and Enabled: No. It will not serve ads. Approval and activation require separate actions.'),
         node('p','New record ID: ' + data.new_target_id,'muted'));
       const confirm = node('button','Create inactive campaign','primary'); confirm.type = 'button';
       confirm.onclick = () => createCampaign(data.confirmation,ticket); $('draft-review').append(confirm);
       $('draft-status').textContent = 'Review the saved settings and warnings, then choose Create inactive campaign to confirm.';
     } else {
-      if (data?.environment !== 'test' || data.draft_id !== current.id || data.revision !== current.revision ||
+      if (data?.environment !== config.environment || data.draft_id !== current.id || data.revision !== current.revision ||
           !/^campaign-[0-9a-f]{64}$/.test(data.target_id || '') || data.created !== true || data.approved !== false || data.enabled !== false ||
           !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.created_at))) throw Error('Invalid creation receipt');
       await load();
-      if (user?.uid === uid) notice('New campaign created in the test project. Approved: No. Enabled: No. It will not serve ads.');
+      if (user?.uid === uid) notice('New campaign created in the ' + config.projectLabel + '. Approved: No. Enabled: No. It will not serve ads.');
     }
   } catch (error) {
     if (!active()) return;
@@ -1520,21 +1525,21 @@ async function createCreative(confirmation = null, preparedTicket = null) {
     if (!active()) return;
     if (!confirmation) {
       const review = validateReview(data?.review,current);
-      if (data.environment !== 'test' || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
+      if (data.environment !== config.environment || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
           !/^creative-[0-9a-f]{64}$/.test(data.new_target_id || '') || data.approved !== false || data.enabled !== false ||
           !review.checks_passed || !review.changes.length || review.kind !== 'creative' || review.target_id !== null) throw Error('Invalid creation summary');
       showReview(review,true);
-      $('draft-review').append(node('p','Creates a new creative in the test project with Approved: No and Enabled: No. It will not serve ads. Approval and activation require separate actions.'),
+      $('draft-review').append(node('p','Creates a new creative in the ' + config.projectLabel + ' with Approved: No and Enabled: No. It will not serve ads. Approval and activation require separate actions.'),
         node('p','New record ID: ' + data.new_target_id,'muted'));
       const confirm = node('button','Create inactive creative','primary'); confirm.type = 'button';
       confirm.onclick = () => createCreative(data.confirmation,ticket); $('draft-review').append(confirm);
       $('draft-status').textContent = 'Review the saved settings and warnings, then choose Create inactive creative to confirm.';
     } else {
-      if (data?.environment !== 'test' || data.draft_id !== current.id || data.revision !== current.revision ||
+      if (data?.environment !== config.environment || data.draft_id !== current.id || data.revision !== current.revision ||
           !/^creative-[0-9a-f]{64}$/.test(data.target_id || '') || data.created !== true || data.approved !== false || data.enabled !== false ||
           !/^[0-9a-f]{64}$/.test(data.history_id || '') || !Number.isFinite(Date.parse(data.created_at))) throw Error('Invalid creation receipt');
       await load();
-      if (user?.uid === uid) notice('New creative created in the test project. Approved: No. Enabled: No. It will not serve ads.');
+      if (user?.uid === uid) notice('New creative created in the ' + config.projectLabel + '. Approved: No. Enabled: No. It will not serve ads.');
     }
   } catch (error) {
     if (!active()) return;
@@ -1568,7 +1573,7 @@ async function campaignPublish(confirmation = null, preparedTicket = null) {
     if (!confirmation) {
       const review = validateReview(data?.review,current);
       const flags = data.current_flags;
-      if (data.environment !== 'test' || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
+      if (data.environment !== config.environment || !/^[0-9a-f]{64}$/.test(data.confirmation || '') ||
           !review.checks_passed || !review.changes.length || review.kind !== current.kind || !review.target_id ||
           typeof flags?.approved !== 'boolean' || typeof flags?.enabled !== 'boolean' ||
           (data.approval_cleared !== true || data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false)) throw Error('Invalid publishing summary');
@@ -1580,14 +1585,14 @@ async function campaignPublish(confirmation = null, preparedTicket = null) {
       publish.onclick = () => campaignPublish(data.confirmation,ticket); $('draft-review').append(publish);
       $('draft-status').textContent = 'Check the exact changes and warnings above, then choose Publish ' + current.kind + ' settings to confirm.';
     } else {
-      if (data?.environment !== 'test' || data.draft_id !== current.id || data.revision !== current.revision ||
+      if (data?.environment !== config.environment || data.draft_id !== current.id || data.revision !== current.revision ||
           data.target_id !== current.target_id || data.settings_published !== true || typeof data.history_id !== 'string' ||
           !/^[0-9a-f]{64}$/.test(data.history_id) || !Number.isFinite(Date.parse(data.published_at)) ||
           (data.approval_cleared !== true || data.resulting_flags?.approved !== false || data.resulting_flags?.enabled !== false)) throw Error('Invalid publication receipt');
       await load();
       if (user?.uid === uid) notice(current.kind === 'creative' ?
-        'Creative edits published in the test project. Approval cleared. Enabled: No. Review and activation are required before delivery.' :
-        'Campaign edits published in the test project. Approval cleared. Enabled: No. Review and activation are required before delivery.');
+        'Creative edits published in the ' + config.projectLabel + '. Approval cleared. Enabled: No. Review and activation are required before delivery.' :
+        'Campaign edits published in the ' + config.projectLabel + '. Approval cleared. Enabled: No. Review and activation are required before delivery.');
     }
   } catch (error) {
     if (!active()) return;
@@ -1665,7 +1670,7 @@ $('draft-form').onsubmit = async event => {
     const response = await persistDraft({draft_id:current.id || null,expected_revision:current.revision || 0,
       kind:current.kind,target_id:current.target_id,fields:values});
     if (run !== generation || user?.uid !== uid || editor !== current) return;
-    if (response.data?.environment !== 'test') throw Error('Invalid draft response');
+    if (response.data?.environment !== config.environment) throw Error('Invalid draft response');
     const saved = validDraft(response.data.draft,true);
     if (saved.kind !== current.kind || saved.target_id !== current.target_id || (current.id && saved.id !== current.id)) throw Error('Unexpected draft');
     drafts = [saved,...drafts.filter(row => row.id !== saved.id)].sort((a,b) => b.updated_at.localeCompare(a.updated_at));
@@ -1718,7 +1723,7 @@ $('email-form').onsubmit = async event => {
       const result = await signInWithEmailLink(auth,email,emailLink);
       resetLink(); $('email').value = ''; handleUser(result.user);
     } else {
-      await sendSignInLinkToEmail(auth,email,{url:'https://matthewobell.github.io/medical-test-prep-reporting/admin-library.html',handleCodeInApp:true});
+      await sendSignInLinkToEmail(auth,email,{url:config.websiteBase + 'admin-library.html',handleCodeInApp:true});
       notice('Sign-in link sent. Check your inbox and spam folder. Only approved admin and ads-team accounts can access this library.');
     }
   } catch { notice('Email sign-in could not finish. Confirm the recipient email, check your connection, or request a new link.',true); }
