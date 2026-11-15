@@ -3,7 +3,7 @@ import { getAuth, setPersistence, browserSessionPersistence, onAuthStateChanged,
   signInWithPopup, signOut, sendSignInLinkToEmail, isSignInWithEmailLink, signInWithEmailLink } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import { initializeAppCheck, ReCaptchaEnterpriseProvider, getToken } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app-check.js';
 import { getFunctions, httpsCallable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-functions.js';
-import { reportingConfig as config } from './reporting-config.js';
+import { reportingConfig as config } from './reporting-config.js?v=23';
 
 const $ = id => document.getElementById(id);
 const app = initializeApp(config.firebase, 'staff-reporting');
