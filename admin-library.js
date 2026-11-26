@@ -47,7 +47,7 @@ const prepareUpload = httpsCallable(getFunctions(app, config.region), 'prepare_a
 const completeUpload = httpsCallable(getFunctions(app, config.region), 'complete_ad_upload');
 let uploadTask = null, previewUrl = null;
 let drafts = [], editor = null, editorRead = null, dirty = false, draftBusy = false, draftRequest = 0;
-let section = 'campaigns', selected = null;
+let section = 'campaigns', selected = null, archiveMode = false;
 let remembered = {}, detailTab = 'Overview';
 let emailLink = isSignInWithEmailLink(auth, window.location.href) ? window.location.href : '';
 const labels = { name:'Name', sponsor_id:'Sponsor', campaign_id:'Campaign', enabled:'Enabled', approved:'Approved',
@@ -159,7 +159,7 @@ function localTime(value) {
 }
 function selectionKey() { return 'campaign-library-selection-v1:' + (config.environment === 'test' ? '' : config.environment + ':') + user.uid; }
 function restoreSelection() {
-  remembered = {}; section = 'campaigns'; selected = null;
+  remembered = {}; section = 'campaigns'; selected = null; archiveMode = false;
   try {
     const saved = JSON.parse(window.localStorage.getItem(selectionKey()));
     if (saved && ['sponsors','campaigns','creatives','drafts'].includes(saved.section)) {
@@ -860,9 +860,11 @@ function sponsorEditPanel(row) {
   nameLabel.append(nameInput); logoLabel.append(logoInput);
   const status = node('p'); status.setAttribute('role','status');
   const review = node('button','Review changes'); review.type = 'submit';
+  const cancel = node('button','Cancel','related'); cancel.type = 'button';
   const summary = node('div');
-  form.append(nameLabel,logoLabel,review,status,summary); panel.append(form); $('details').append(panel);
+  form.append(nameLabel,logoLabel,review,cancel,status,summary); panel.append(form); $('details').append(panel);
   let busy = false, ticket = 0;
+  cancel.onclick = () => { ++ticket; panel.remove(); };
   nameInput.oninput = logoInput.oninput = () => { ++ticket; summary.replaceChildren(); status.textContent = ''; };
   form.onsubmit = async event => {
     event.preventDefault(); if (busy || !form.reportValidity()) return;
@@ -887,7 +889,7 @@ function sponsorEditPanel(row) {
       const confirm = node('button','Confirm sponsor changes'); confirm.type = 'button'; summary.append(confirm);
       confirm.onclick = async () => {
         if (busy || !active() || fields.name !== nameInput.value.trim() || fields.logo_url !== logoInput.value.trim()) return;
-        busy = true; confirm.disabled = review.disabled = true; status.textContent = 'Saving sponsor changes...';
+        busy = true; confirm.disabled = review.disabled = cancel.disabled = true; status.textContent = 'Saving sponsor changes...';
         try {
           const receipt = (await requestSponsorEdit({action:'update',target_id:id,fields,confirmation:prepared.confirmation})).data;
           if (!active()) return;
@@ -899,7 +901,7 @@ function sponsorEditPanel(row) {
         } catch (error) {
           if (active()) status.textContent = error?.code?.includes('aborted') ?
             'Sponsor changed. Refresh the library and review again.' : 'Update could not be confirmed. Refresh to check its current details.';
-        } finally { busy = false; if (panel.isConnected) { review.disabled = false; confirm.disabled = false; } }
+        } finally { busy = false; if (panel.isConnected) { review.disabled = false; confirm.disabled = false; cancel.disabled = false; } }
       };
       status.textContent = 'Review ready. Nothing has changed yet.';
     } catch (error) {
@@ -1125,7 +1127,7 @@ function updateCampaigns() {
   }
 }
 function matchesStatus(row) {
-  const status = $('record-status').value;
+  const status = archiveMode ? 'archived' : $('record-status').value;
   return status === 'all' || status === 'archived' && row.archived === true || status === 'active' && row.archived !== true || status === 'approved' && row.approved === true || status === 'unapproved' && row.approved === false || status === 'enabled' && row.enabled === true || status === 'disabled' && row.enabled === false;
 }
 function renderTable(rows) {
@@ -1158,8 +1160,8 @@ function renderTable(rows) {
 function render() {
   if (!catalog || !user) return;
   const titles = {campaigns:'Campaigns',creatives:'Ad creatives',sponsors:'Sponsors',drafts:'Drafts'};
-  $('browse-title').textContent = titles[section];
-  $('browse-description').textContent = section === 'drafts' ? 'Continue saved work without changing ad delivery.' : section === 'campaigns' ? 'Manage campaigns and the ads within them.' : section === 'creatives' ? 'Manage the ads within your campaigns.' : 'Inspect sponsor records and their campaigns.';
+  $('browse-title').textContent = archiveMode ? 'Archive · ' + titles[section] : titles[section];
+  $('browse-description').textContent = archiveMode ? 'Archived records are kept here separately from active work.' : section === 'drafts' ? 'Continue saved work without changing ad delivery.' : section === 'campaigns' ? 'Manage campaigns and the ads within them.' : section === 'creatives' ? 'Manage the ads within your campaigns.' : 'Inspect sponsor records and their campaigns.';
   $('library-search').placeholder = 'Search ' + titles[section].toLowerCase() + ' by name or ID';
   $('campaign-count').textContent = String(catalog.campaigns.length);
   $('creative-count').textContent = String(catalog.creatives.length);
@@ -1170,14 +1172,15 @@ function render() {
   $('guide-sponsor-status').textContent = catalog.sponsors.filter(row => row.enabled && !row.archived).length + ' enabled';
   $('guide-campaign-status').textContent = catalog.campaigns.filter(row => row.enabled && row.approved && !row.archived).length + ' active';
   $('guide-creative-status').textContent = catalog.creatives.filter(row => row.enabled && row.approved && !row.archived).length + ' active';
-  $('record-status').disabled = false;
+  $('record-status').disabled = archiveMode;
+  $('tab-archive').setAttribute('aria-pressed',String(archiveMode));
   $('tab-drafts').setAttribute('aria-pressed',String(section === 'drafts'));
   $('sponsor-filter').disabled = section === 'drafts';
   if (section === 'drafts') { renderDrafts(); return; }
   const sponsor = $('sponsor-filter').value, campaign = $('campaign-filter').value;
   const campaignIds = new Set(catalog.campaigns.filter(row =>
     (sponsor === 'all' || row.sponsor_id === sponsor) && (campaign === 'all' || row.id === campaign)).map(row => row.id));
-  const rows = catalog[section].filter(row => section === 'sponsors' ? sponsor === 'all' || row.id === sponsor :
+  const rows = catalog[section].filter(row => !archiveMode || row.archived === true).filter(row => section === 'sponsors' ? sponsor === 'all' || row.id === sponsor :
     section === 'campaigns' ? campaignIds.has(row.id) : campaignIds.has(row.campaign_id)).filter(matchesSearch).filter(matchesStatus);
   const currentRow = chooseRow(rows);
   for (const type of Object.keys(fields)) $('tab-' + type).setAttribute('aria-pressed',String(section === type));
@@ -1907,9 +1910,13 @@ $('refresh').onclick = load;
 $('sponsor-filter').onchange = () => { if (!catalog) return; selected = null; updateCampaigns(); render(); };
 $('campaign-filter').onchange = () => { selected = null; render(); };
 function switchSection(type) {
-  section = type; selected = null; detailTab = 'Overview'; $('library-search').value = ''; $('record-status').value = 'all'; render();
+  section = type; archiveMode = false; selected = null; detailTab = 'Overview'; $('library-search').value = ''; $('record-status').value = 'all'; render();
 }
-for (const type of Object.keys(fields)) $('tab-' + type).onclick = () => switchSection(type);
+function switchArchive(type = section) {
+  section = type; archiveMode = true; selected = null; detailTab = 'Overview'; $('library-search').value = ''; $('record-status').value = 'archived'; render();
+}
+for (const type of Object.keys(fields)) $('tab-' + type).onclick = () => archiveMode ? switchArchive(type) : switchSection(type);
+$('tab-archive').onclick = () => switchArchive();
 $('library-search').oninput = () => { selected = null; render(); };
 $('record-status').onchange = () => { selected = null; render(); };
 $('search-form').onsubmit = event => { event.preventDefault(); selected = null; render(); };
